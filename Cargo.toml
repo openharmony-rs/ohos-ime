@@ -1,0 +1,12 @@
+[package]
+name = "ohos-ime"
+version = "0.1.0"
+edition = "2021"
+description = "Bindings to the `inputmethod` API of OpenHarmony"
+license = "Apache-2.0"
+repository = "todo"
+keywords = ["OpenHarmony", "HarmonyOS", "IME", "inputmethod"]
+# readme = "README.md"
+
+[dependencies]
+ohos-ime-sys = {  version = "0.1.0", features = ["api-12"], path = "/home/jschwender/Dev/ohos-sys/components/inputmethod" }
