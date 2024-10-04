@@ -3,12 +3,21 @@
 version = 3
 
 [[package]]
+name = "log"
+version = "0.4.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
+
+[[package]]
 name = "ohos-ime"
 version = "0.1.0"
 dependencies = [
+ "log",
  "ohos-ime-sys",
 ]
 
 [[package]]
 name = "ohos-ime-sys"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12be156a401d3a97d3b2e5de3a864f585a71098bbc830130a5c876c6ba38f572"
