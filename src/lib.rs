@@ -3,12 +3,17 @@
 //! This crate provides an [`ImeProxy`], which allows interacting with the Input method on OpenHarmony
 //! devices. The user needs to implement the [`Ime`] trait
 //!
-//! This crate is still under active development.
+//! This crate is still under active development and based on the
+//! [InputMethod C-API] of OpenHarmony.
+//!
+//! [InputMethod C-API]: https://docs.openharmony.cn/pages/v5.0/zh-cn/application-dev/reference/apis-ime-kit/_input_method.md
 //!
 //! ## Usage
 //!
 //! 1. Implement the Ime trait
 //! 2. call `ImeProxy::new()`
+//!
+//!
 
 mod text_editor;
 
