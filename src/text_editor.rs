@@ -1,6 +1,6 @@
 #![allow(unused)]
 use crate::Ime;
-use log::{error, info, trace};
+use log::{debug, error, info, trace, warn};
 use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
 use ohos_ime_sys::text_config::InputMethod_TextConfig;
 use ohos_ime_sys::text_editor_proxy::InputMethod_TextEditorProxy;
@@ -45,8 +45,7 @@ impl Dispatcher {
     fn insert_text(
         &self,
         text_editor_proxy: *mut InputMethod_TextEditorProxy,
-        text: *const u16,
-        length: usize,
+        text: &[u16],
     ) {
         let map = self.map.read().unwrap();
         let ime = map
@@ -54,12 +53,7 @@ impl Dispatcher {
             .and_then(|m| m.get(&(text_editor_proxy as usize)));
         match ime {
             Some(ime) => {
-                // The assertion fails, so either this not utf-16, or the unit is not bytes.
-                // assert_eq!(length % 2, 0, "Well, I'm just assuming length is in bytes, lets see...");
-                let utf16_str = slice_from_raw_parts(text, length);
-                let slice = unsafe { utf16_str.as_ref() }.unwrap();
-                let rust_string = String::from_utf16(slice);
-
+                let rust_string = String::from_utf16(text);
                 match rust_string {
                     Ok(s) => {
                         ime.insert_text(s);
@@ -119,9 +113,19 @@ pub extern "C" fn get_text_config(
 pub extern "C" fn insert_text(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     text: *const u16,
+    // `length` % 2 == 0 does not hold, so this seems to be number u16 codepoints.
     length: usize,
 ) {
-    DISPATCHER.insert_text(text_editor_proxy, text, length);
+    if length > 0 {
+        let utf16_str = slice_from_raw_parts(text, length);
+        // SAFETY: We trust the OH APIs to give us a valid u16 slice
+        if let Some(slice) = unsafe { utf16_str.as_ref() } {
+            DISPATCHER.insert_text(text_editor_proxy, slice);
+        } else {
+            #[cfg(debug_assertions)]
+            error!("insert_text received text slice with len {length} but addr {text:?}")
+        }
+    }
 }
 
 pub extern "C" fn delete_forward(text_editor_proxy: *mut InputMethod_TextEditorProxy, length: i32) {
