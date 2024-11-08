@@ -15,8 +15,11 @@
 //!
 //!
 
+mod text_config;
 mod text_editor;
 
+pub use crate::text_config::{TextConfig, TextConfigBuilder, TextSelection};
+use crate::text_editor::DISPATCHER;
 use log::error;
 use ohos_ime_sys::attach_options::{
     InputMethod_AttachOptions, OH_AttachOptions_Create, OH_AttachOptions_Destroy,
@@ -38,10 +41,11 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSendEnterKeyFunc, OH_TextEditorProxy_SetSendKeyboardStatusFunc,
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
-use ohos_ime_sys::types::InputMethod_ErrorCode;
+use ohos_ime_sys::types::{InputMethod_EnterKeyType, InputMethod_ErrorCode};
 use std::ptr::NonNull;
 
 // Todo: Well, honestly we really need to clarify the required sematics on the IME.
+/// User implementation of required Inputmethod functionality
 pub trait Ime: Send + Sync {
     /// Insert `text` at the current cursor position.
     fn insert_text(&self, text: String);
@@ -50,6 +54,17 @@ pub trait Ime: Send + Sync {
 
     /// Delete the previous `len` `char`s(?) before the current cursor position
     fn delete_backward(&self, len: usize);
+
+    /// Return the text configuration associated with the current IME
+    fn get_text_config(&self) -> &TextConfig;
+
+    /// Process the enter key variant pressed by the user.
+    ///
+    /// Depending on the configuration (applied by the implementation of [`get_text_config()`])
+    /// the enterkey label displayed to the user varies.
+    /// This function will be called when the enter key is pressed and the associated label
+    /// is passed, so that the application can handle it accordingly.
+    fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType);
     // ...
 }
 
@@ -62,6 +77,18 @@ pub struct ImeProxy {
     // keep the text editor alive.
     #[allow(dead_code)]
     editor: RawTextEditorProxy,
+}
+
+impl Drop for ImeProxy {
+    fn drop(&mut self) {
+        let res = DISPATCHER.unregister(self.editor.raw);
+        #[cfg(debug_assertions)]
+        if let Err(e) = res {
+            error!("IME: ImeProxy destroy failed {:?}", e);
+        }
+        #[cfg(not(debug_assertions))]
+        drop(res)
+    }
 }
 
 pub struct ShowKeyboardError {}
