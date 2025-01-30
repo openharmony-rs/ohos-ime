@@ -41,7 +41,7 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSendEnterKeyFunc, OH_TextEditorProxy_SetSendKeyboardStatusFunc,
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
-use ohos_ime_sys::types::{InputMethod_EnterKeyType, InputMethod_ErrorCode};
+use ohos_ime_sys::types::{InputMethodResult, InputMethod_EnterKeyType};
 use std::ptr::NonNull;
 
 // Todo: Well, honestly we really need to clarify the required sematics on the IME.
@@ -67,10 +67,6 @@ pub trait Ime: Send + Sync {
     fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType);
     // ...
 }
-
-// Todo: Use enum and convert from raw error code
-#[allow(dead_code)]
-pub struct ImeError(InputMethod_ErrorCode);
 
 pub struct ImeProxy {
     raw: NonNull<InputMethod_InputMethodProxy>,
@@ -98,15 +94,15 @@ impl ImeProxy {
     pub fn new(editor: RawTextEditorProxy, options: AttachOptions) -> Self {
         unsafe {
             let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
-            let res = OH_InputMethodController_Attach(
+            OH_InputMethodController_Attach(
                 editor.raw.as_ptr(),
                 options.raw.as_ptr(),
                 &mut ime_proxy as *mut *mut InputMethod_InputMethodProxy,
-            );
-            if res != InputMethod_ErrorCode::IME_ERR_OK {
-                error!("OH_InputMethodController_Attach failed with: {}", res.0);
-            }
+            )
+            .inspect_err(|e| error!("OH_InputMethodController_Attach failed with: {e:?}"))
+            .expect("OH_InputMethodController_Attach failed");
 
+            // Todo: Return Result.
             Self {
                 raw: NonNull::new(ime_proxy).expect("OH_InputMethodController_Attach failed"),
                 editor,
@@ -114,22 +110,12 @@ impl ImeProxy {
         }
     }
 
-    pub fn show_keyboard(&self) -> Result<(), ImeError> {
-        let res = unsafe { OH_InputMethodProxy_ShowKeyboard(self.raw.as_ptr()) };
-        if res == InputMethod_ErrorCode::IME_ERR_OK {
-            Ok(())
-        } else {
-            Err(ImeError(res))
-        }
+    pub fn show_keyboard(&self) -> InputMethodResult {
+        unsafe { OH_InputMethodProxy_ShowKeyboard(self.raw.as_ptr()) }
     }
 
-    pub fn hide_keyboard(&self) -> Result<(), ImeError> {
-        let res = unsafe { OH_InputMethodProxy_HideKeyboard(self.raw.as_ptr()) };
-        if res == InputMethod_ErrorCode::IME_ERR_OK {
-            Ok(())
-        } else {
-            Err(ImeError(res))
-        }
+    pub fn hide_keyboard(&self) -> InputMethodResult {
+        unsafe { OH_InputMethodProxy_HideKeyboard(self.raw.as_ptr()) }
     }
 }
 
@@ -204,123 +190,56 @@ impl RawTextEditorProxy {
             raw: NonNull::new(proxy).expect("OOM?"),
         };
         text_editor::DISPATCHER.register(proxy.raw, ime);
-        proxy.register_dispatcher_callbacks();
+        // Todo: Change Return type to Result
+        proxy
+            .register_dispatcher_callbacks()
+            .expect("Failed to register dispatcher");
         proxy
     }
 
-    fn register_dispatcher_callbacks(&mut self) {
+    fn register_dispatcher_callbacks(&mut self) -> InputMethodResult {
         use text_editor::*;
         unsafe {
-            let res =
-                OH_TextEditorProxy_SetGetTextConfigFunc(self.raw.as_ptr(), Some(get_text_config));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res = OH_TextEditorProxy_SetInsertTextFunc(self.raw.as_ptr(), Some(insert_text));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res =
-                OH_TextEditorProxy_SetDeleteForwardFunc(self.raw.as_ptr(), Some(delete_forward));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res =
-                OH_TextEditorProxy_SetDeleteBackwardFunc(self.raw.as_ptr(), Some(delete_backward));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res = OH_TextEditorProxy_SetSendKeyboardStatusFunc(
+            OH_TextEditorProxy_SetGetTextConfigFunc(self.raw.as_ptr(), Some(get_text_config))?;
+            OH_TextEditorProxy_SetInsertTextFunc(self.raw.as_ptr(), Some(insert_text))?;
+            OH_TextEditorProxy_SetDeleteForwardFunc(self.raw.as_ptr(), Some(delete_forward))?;
+            OH_TextEditorProxy_SetDeleteBackwardFunc(self.raw.as_ptr(), Some(delete_backward))?;
+            OH_TextEditorProxy_SetSendKeyboardStatusFunc(
                 self.raw.as_ptr(),
                 Some(send_keyboard_status),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res =
-                OH_TextEditorProxy_SetSendEnterKeyFunc(self.raw.as_ptr(), Some(send_enter_key));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res = OH_TextEditorProxy_SetMoveCursorFunc(self.raw.as_ptr(), Some(move_cursor));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res = OH_TextEditorProxy_SetHandleSetSelectionFunc(
+            )?;
+            OH_TextEditorProxy_SetSendEnterKeyFunc(self.raw.as_ptr(), Some(send_enter_key))?;
+            OH_TextEditorProxy_SetMoveCursorFunc(self.raw.as_ptr(), Some(move_cursor))?;
+            OH_TextEditorProxy_SetHandleSetSelectionFunc(
                 self.raw.as_ptr(),
                 Some(handle_set_selection),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res = OH_TextEditorProxy_SetHandleExtendActionFunc(
+            )?;
+            OH_TextEditorProxy_SetHandleExtendActionFunc(
                 self.raw.as_ptr(),
                 Some(handle_extend_action),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res = OH_TextEditorProxy_SetGetLeftTextOfCursorFunc(
+            )?;
+            OH_TextEditorProxy_SetGetLeftTextOfCursorFunc(
                 self.raw.as_ptr(),
                 Some(get_left_text_of_cursor),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-            let res = OH_TextEditorProxy_SetGetRightTextOfCursorFunc(
+            )?;
+            OH_TextEditorProxy_SetGetRightTextOfCursorFunc(
                 self.raw.as_ptr(),
                 Some(get_right_text_of_cursor),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res = OH_TextEditorProxy_SetGetTextIndexAtCursorFunc(
+            )?;
+            OH_TextEditorProxy_SetGetTextIndexAtCursorFunc(
                 self.raw.as_ptr(),
                 Some(get_text_index_at_cursor),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res = OH_TextEditorProxy_SetReceivePrivateCommandFunc(
+            )?;
+            OH_TextEditorProxy_SetReceivePrivateCommandFunc(
                 self.raw.as_ptr(),
                 Some(receive_private_command),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res =
-                OH_TextEditorProxy_SetSetPreviewTextFunc(self.raw.as_ptr(), Some(set_preview_text));
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
-
-            let res = OH_TextEditorProxy_SetFinishTextPreviewFunc(
+            )?;
+            OH_TextEditorProxy_SetSetPreviewTextFunc(self.raw.as_ptr(), Some(set_preview_text))?;
+            OH_TextEditorProxy_SetFinishTextPreviewFunc(
                 self.raw.as_ptr(),
                 Some(finish_text_preview),
-            );
-            assert!(
-                res == InputMethod_ErrorCode::IME_ERR_OK,
-                "Registering default IME fn failed"
-            );
+            )?;
+            Ok(())
         }
     }
 }
