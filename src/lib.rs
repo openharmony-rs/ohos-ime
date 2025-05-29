@@ -95,7 +95,7 @@ pub struct ShowKeyboardError {}
 
 impl ImeProxy {
     // todo: maybe use builder pattern instead.
-    pub fn new(editor: RawTextEditorProxy, options: AttachOptions, ime: Box<dyn Ime>) -> Self {
+    pub fn new(editor: RawTextEditorProxy, options: AttachOptions) -> Self {
         unsafe {
             let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
             let res = OH_InputMethodController_Attach(
@@ -106,7 +106,7 @@ impl ImeProxy {
             if res != InputMethod_ErrorCode::IME_ERR_OK {
                 error!("OH_InputMethodController_Attach failed with: {}", res.0);
             }
-            text_editor::DISPATCHER.register(editor.raw, ime);
+
             Self {
                 raw: NonNull::new(ime_proxy).expect("OH_InputMethodController_Attach failed"),
                 editor,
@@ -198,11 +198,12 @@ pub struct RawTextEditorProxy {
 }
 
 impl RawTextEditorProxy {
-    pub fn new() -> Self {
+    pub fn new(ime: Box<dyn Ime>) -> Self {
         let proxy = unsafe { OH_TextEditorProxy_Create() };
         let mut proxy = Self {
             raw: NonNull::new(proxy).expect("OOM?"),
         };
+        text_editor::DISPATCHER.register(proxy.raw, ime);
         proxy.register_dispatcher_callbacks();
         proxy
     }
@@ -324,11 +325,6 @@ impl RawTextEditorProxy {
     }
 }
 
-impl Default for RawTextEditorProxy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 impl Drop for RawTextEditorProxy {
     fn drop(&mut self) {
         unsafe {
