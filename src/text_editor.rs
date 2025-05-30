@@ -182,30 +182,23 @@ fn apply_text_config(
     oh_config: *mut InputMethod_TextConfig,
 ) -> Result<(), ApplyTextConfigError> {
     unsafe {
-        let res = OH_TextConfig_SetInputType(oh_config, config.input_type.clone());
-        if !res.is_ok() {
-            return Err(ApplyTextConfigError::SetInputTypeFailed);
-        }
-        let res = OH_TextConfig_SetEnterKeyType(oh_config, config.enterkey_type.clone());
-        if !res.is_ok() {
-            return Err(ApplyTextConfigError::SetEnterKeyTypeFailed);
-        }
-        let res = OH_TextConfig_SetPreviewTextSupport(oh_config, config.preview_text_support);
-        if !res.is_ok() {
-            return Err(ApplyTextConfigError::SetPreviewTextSupportFailed);
-        }
+        OH_TextConfig_SetInputType(oh_config, config.input_type.clone())
+            .map_err(|_e| ApplyTextConfigError::SetInputTypeFailed)?;
+
+        OH_TextConfig_SetEnterKeyType(oh_config, config.enterkey_type.clone())
+            .map_err(|_e| ApplyTextConfigError::SetEnterKeyTypeFailed)?;
+
+        OH_TextConfig_SetPreviewTextSupport(oh_config, config.preview_text_support)
+            .map_err(|_e| ApplyTextConfigError::SetPreviewTextSupportFailed)?;
+
         if let Some(selection) = &config.selection {
-            let res = OH_TextConfig_SetSelection(oh_config, selection.start, selection.end);
-            if !res.is_ok() {
-                return Err(ApplyTextConfigError::SetSelectioFailed);
-            }
+            OH_TextConfig_SetSelection(oh_config, selection.start, selection.end)
+                .map_err(|_e| ApplyTextConfigError::SetSelectioFailed);
         }
         if let Some(window_id) = config.window_id {
             // let's see if this is optional...
-            let res = OH_TextConfig_SetWindowId(oh_config, window_id);
-            if !res.is_ok() {
-                return Err(ApplyTextConfigError::SetWindowIdFailed);
-            }
+            OH_TextConfig_SetWindowId(oh_config, window_id)
+                .map_err(|_e| ApplyTextConfigError::SetWindowIdFailed)?;
         }
     }
     Ok(())

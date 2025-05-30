@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.0
+
+- Change Result type
+
 ## v0.3.0
 
 ### Breaking 
