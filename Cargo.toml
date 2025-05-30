@@ -1,6 +1,6 @@
 [package]
 name = "ohos-ime"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Bindings to the `inputmethod` API of OpenHarmony"
 license = "Apache-2.0"
@@ -9,7 +9,7 @@ keywords = ["OpenHarmony", "HarmonyOS", "IME", "inputmethod"]
 readme = "README.md"
 
 [dependencies]
-ohos-ime-sys = {  version = "0.1.1", features = ["api-12"]}
+ohos-ime-sys = {  version = "0.2.0", features = ["api-12"]}
 log = "0.4.22"
 
 [features]
