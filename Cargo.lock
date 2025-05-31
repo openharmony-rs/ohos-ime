@@ -10,7 +10,7 @@ checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
 name = "ohos-ime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "log",
  "ohos-ime-sys",
@@ -19,3 +19,5 @@ dependencies = [
 [[package]]
 name = "ohos-ime-sys"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89d326ae2b2e71f95ca756b7d418c0adcb0018889e73f7eabed59671cb179608"

@@ -3,6 +3,7 @@
 ## v0.4.0
 
 - Change Result type
+- Change signature of `ImeProxy::new()` and `RawTextEditorProxy::new()` to return a result
 
 ## v0.3.0
 

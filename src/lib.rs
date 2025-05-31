@@ -42,6 +42,7 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
 use ohos_ime_sys::types::{InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType};
+use std::fmt::Debug;
 use std::ptr::NonNull;
 
 // Todo: Well, honestly we really need to clarify the required sematics on the IME.
@@ -87,25 +88,41 @@ impl Drop for ImeProxy {
     }
 }
 
-pub struct ShowKeyboardError {}
+pub struct CreateImeProxyError {
+    pub editor: RawTextEditorProxy,
+    pub options: AttachOptions,
+    pub error_code: InputMethodErrorCode,
+}
+
+impl Debug for CreateImeProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("InputMethodErrorCode: {:?}", self.error_code))
+    }
+}
 
 impl ImeProxy {
     // todo: maybe use builder pattern instead.
-    pub fn new(editor: RawTextEditorProxy, options: AttachOptions) -> Result<Self, InputMethodErrorCode> {
+    pub fn new(
+        editor: RawTextEditorProxy,
+        options: AttachOptions,
+    ) -> Result<Self, CreateImeProxyError> {
         unsafe {
             let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
-            let result = OH_InputMethodController_Attach(
+            if let Err(error_code) = OH_InputMethodController_Attach(
                 editor.raw.as_ptr(),
                 options.raw.as_ptr(),
-                &mut ime_proxy as *mut *mut InputMethod_InputMethodProxy,
-            );
-            if let Err(e) = result {
-                error!("OH_InputMethodController_Attach failed with: {e:?}");
-                return Err(e);
+                &raw mut ime_proxy,
+            ) {
+                return Err(CreateImeProxyError {
+                    editor,
+                    options,
+                    error_code,
+                });
             }
 
             Ok(Self {
-                raw: NonNull::new(ime_proxy).expect("OH_InputMethodController_Attach failed"),
+                // We checked the returncode above, so the pointer should be valid and non-null now.
+                raw: NonNull::new(ime_proxy).expect("Wrong Errorcode"),
                 editor,
             })
         }
@@ -184,17 +201,45 @@ pub struct RawTextEditorProxy {
     raw: NonNull<InputMethod_TextEditorProxy>,
 }
 
+#[derive(Debug)]
+pub enum CreateTextEditorProxyErrorKind {
+    /// Indicates Out of Memory situation
+    CreateProxyFailed,
+    /// Registering the C callbacks failed.
+    RegisterCallbacksFailed(InputMethodErrorCode),
+}
+pub struct CreateTextEditorProxyError {
+    /// Returns the ime passed to [`RawTextEditorProxy::new`].
+    pub ime: Box<dyn Ime>,
+    pub reason: CreateTextEditorProxyErrorKind,
+}
+
+impl Debug for CreateTextEditorProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self.reason))
+    }
+}
+
 impl RawTextEditorProxy {
-    pub fn new(ime: Box<dyn Ime>) -> Result<Self, InputMethodErrorCode> {
-        let proxy = unsafe { OH_TextEditorProxy_Create() };
-        let mut proxy = Self {
-            raw: NonNull::new(proxy).expect("OOM?"),
+    pub fn new(ime: Box<dyn Ime>) -> Result<Self, CreateTextEditorProxyError> {
+        let raw_proxy = unsafe { OH_TextEditorProxy_Create() };
+        let Some(raw_proxy) = NonNull::new(raw_proxy) else {
+            let err = Err(CreateTextEditorProxyError {
+                ime,
+                reason: CreateTextEditorProxyErrorKind::CreateProxyFailed,
+            });
+            return err;
         };
-        text_editor::DISPATCHER.register(proxy.raw, ime);
-        if let Err(e) =  proxy.register_dispatcher_callbacks() {
-            error!("Failed to register dispatcher callbacks: {:?}", e);
-            return Err(e);
-        }
+        let mut proxy = Self { raw: raw_proxy };
+        DISPATCHER.register(proxy.raw, ime);
+        proxy.register_dispatcher_callbacks().map_err(|e| {
+            // unregistering here should never fail
+            let ime = DISPATCHER.unregister(proxy.raw).expect("Unregister failed");
+            CreateTextEditorProxyError {
+                ime,
+                reason: CreateTextEditorProxyErrorKind::RegisterCallbacksFailed(e),
+            }
+        })?;
         Ok(proxy)
     }
 
