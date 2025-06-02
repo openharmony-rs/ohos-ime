@@ -41,7 +41,7 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSendEnterKeyFunc, OH_TextEditorProxy_SetSendKeyboardStatusFunc,
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
-use ohos_ime_sys::types::{InputMethodResult, InputMethod_EnterKeyType};
+use ohos_ime_sys::types::{InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType};
 use std::ptr::NonNull;
 
 // Todo: Well, honestly we really need to clarify the required sematics on the IME.
@@ -91,22 +91,23 @@ pub struct ShowKeyboardError {}
 
 impl ImeProxy {
     // todo: maybe use builder pattern instead.
-    pub fn new(editor: RawTextEditorProxy, options: AttachOptions) -> Self {
+    pub fn new(editor: RawTextEditorProxy, options: AttachOptions) -> Result<Self, InputMethodErrorCode> {
         unsafe {
             let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
-            OH_InputMethodController_Attach(
+            let result = OH_InputMethodController_Attach(
                 editor.raw.as_ptr(),
                 options.raw.as_ptr(),
                 &mut ime_proxy as *mut *mut InputMethod_InputMethodProxy,
-            )
-            .inspect_err(|e| error!("OH_InputMethodController_Attach failed with: {e:?}"))
-            .expect("OH_InputMethodController_Attach failed");
+            );
+            if let Err(e) = result {
+                error!("OH_InputMethodController_Attach failed with: {e:?}");
+                return Err(e);
+            }
 
-            // Todo: Return Result.
-            Self {
+            Ok(Self {
                 raw: NonNull::new(ime_proxy).expect("OH_InputMethodController_Attach failed"),
                 editor,
-            }
+            })
         }
     }
 
@@ -184,17 +185,17 @@ pub struct RawTextEditorProxy {
 }
 
 impl RawTextEditorProxy {
-    pub fn new(ime: Box<dyn Ime>) -> Self {
+    pub fn new(ime: Box<dyn Ime>) -> Result<Self, InputMethodErrorCode> {
         let proxy = unsafe { OH_TextEditorProxy_Create() };
         let mut proxy = Self {
             raw: NonNull::new(proxy).expect("OOM?"),
         };
         text_editor::DISPATCHER.register(proxy.raw, ime);
-        // Todo: Change Return type to Result
-        proxy
-            .register_dispatcher_callbacks()
-            .expect("Failed to register dispatcher");
-        proxy
+        if let Err(e) =  proxy.register_dispatcher_callbacks() {
+            error!("Failed to register dispatcher callbacks: {:?}", e);
+            return Err(e);
+        }
+        Ok(proxy)
     }
 
     fn register_dispatcher_callbacks(&mut self) -> InputMethodResult {
