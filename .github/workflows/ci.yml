@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  code_quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --check
+      - run: cargo clippy
+
+  build-toolchains:
+    strategy:
+      matrix:
+        toolchain: ["1.85.0", stable]
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - run: cargo build
+        name: Build default features
+      - run: cargo build --all-features
+        name: Build all features
+
+  semver_checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+
+  rustdoc:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Build docs
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "--cfg=docsrs"
+
+  build-result:
+    name: Result
+    runs-on: ubuntu-latest
+    if: always()
+    # needs all build to detect cancellation
+    needs:
+      - code_quality
+      - build-toolchains
+      - semver_checks
+      - rustdoc
+    steps:
+      - name: Success
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        run: exit 0
+      - name: Failure
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
