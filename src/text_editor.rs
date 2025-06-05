@@ -169,6 +169,7 @@ impl Dispatcher {
 }
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum ApplyTextConfigError {
     SetInputTypeFailed,
     SetEnterKeyTypeFailed,
@@ -182,10 +183,10 @@ fn apply_text_config(
     oh_config: *mut InputMethod_TextConfig,
 ) -> Result<(), ApplyTextConfigError> {
     unsafe {
-        OH_TextConfig_SetInputType(oh_config, config.input_type.clone())
+        OH_TextConfig_SetInputType(oh_config, config.input_type)
             .map_err(|_e| ApplyTextConfigError::SetInputTypeFailed)?;
 
-        OH_TextConfig_SetEnterKeyType(oh_config, config.enterkey_type.clone())
+        OH_TextConfig_SetEnterKeyType(oh_config, config.enterkey_type)
             .map_err(|_e| ApplyTextConfigError::SetEnterKeyTypeFailed)?;
 
         OH_TextConfig_SetPreviewTextSupport(oh_config, config.preview_text_support)

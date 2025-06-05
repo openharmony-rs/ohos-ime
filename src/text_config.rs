@@ -54,7 +54,7 @@ pub struct TextConfigBuilder {
 }
 
 impl TextConfigBuilder {
-    pub fn new() -> TextConfigBuilder {
+    pub const fn new() -> TextConfigBuilder {
         TextConfigBuilder {
             input_type: InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_TEXT,
             enterkey_type: InputMethod_EnterKeyType::IME_ENTER_KEY_UNSPECIFIED,
@@ -67,8 +67,8 @@ impl TextConfigBuilder {
     pub fn build(&self) -> TextConfig {
         TextConfig {
             // raw: config,
-            input_type: self.input_type.clone(),
-            enterkey_type: self.enterkey_type.clone(),
+            input_type: self.input_type,
+            enterkey_type: self.enterkey_type,
             preview_text_support: self.preview_text_support,
             selection: self.selection.clone(),
             window_id: self.window_id,
@@ -98,5 +98,11 @@ impl TextConfigBuilder {
     pub fn window_id(mut self, window_id: i32) -> TextConfigBuilder {
         self.window_id = Some(window_id);
         self
+    }
+}
+
+impl Default for TextConfigBuilder {
+    fn default() -> TextConfigBuilder {
+        Self::new()
     }
 }
