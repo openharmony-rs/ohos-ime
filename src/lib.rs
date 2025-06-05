@@ -164,10 +164,8 @@ impl AttachOptions {
         // We also asserted that bool and `u8` have the same layout, and do not rely on the
         // C-side writing a valid bool.
         unsafe {
-            let err = OH_AttachOptions_IsShowKeyboard(
-                self.raw.as_ptr(),
-                (&mut show_keyboard as *mut u8).cast(),
-            );
+            let err =
+                OH_AttachOptions_IsShowKeyboard(self.raw.as_ptr(), (&raw mut show_keyboard).cast());
             // The only documented failure condition is passing a nullpointer, which is impossible for
             // us since we use NonNull, so we don't check the result in release mode.
             debug_assert!(err.is_ok());
