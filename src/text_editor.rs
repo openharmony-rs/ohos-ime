@@ -287,6 +287,10 @@ pub extern "C" fn get_left_text_of_cursor(
     length: *mut usize,
 ) {
     error!("get_left_text_of_cursor not implemented");
+    unsafe {
+        *text = 0;
+        *length = 1;
+    }
 }
 
 pub extern "C" fn get_right_text_of_cursor(
@@ -296,6 +300,10 @@ pub extern "C" fn get_right_text_of_cursor(
     length: *mut usize,
 ) {
     error!("get_right_text_of_cursor not implemented");
+    unsafe {
+        *text = 0;
+        *length = 1;
+    }
 }
 
 pub extern "C" fn get_text_index_at_cursor(
