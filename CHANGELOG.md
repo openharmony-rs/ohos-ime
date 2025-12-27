@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1
+
+- Update `Ime` trait with `keyboard_status_changed()`, which is called when the keyboard status changes.
+  A default implementation is provided, so this is not a breaking change.
+- Fix a warning in get_left_text_of_cursor().
+
 ## v0.4.0
 
 - Change Result type
