@@ -2,7 +2,7 @@
 // - switch to parking lot and uns MutexGuard::map or owning_ref to reduce some of duplicate code here.
 #![allow(unused)]
 pub use crate::text_config::{TextConfig, TextConfigBuilder};
-use crate::Ime;
+use crate::{Ime, KeyboardStatus};
 use log::{debug, error, info, trace, warn};
 use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
 use ohos_ime_sys::text_config::{
@@ -166,6 +166,24 @@ impl Dispatcher {
             }
         }
     }
+
+    /// Helper function to dispatch a closure to the IME implementation.
+    fn dispatch(
+        &self,
+        text_editor_proxy: *mut InputMethod_TextEditorProxy,
+        f: impl FnOnce(&Box<dyn Ime>),
+    ) {
+        let map = self.map.read().unwrap();
+        let ime = map
+            .as_ref()
+            .and_then(|m| m.get(&(text_editor_proxy as usize)));
+        match ime {
+            Some(ime) => f(ime),
+            None => {
+                error!("IME dispatcher called, but no IME implementation registered!")
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -245,10 +263,8 @@ pub extern "C" fn send_keyboard_status(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     keyboard_status: InputMethod_KeyboardStatus,
 ) {
-    error!(
-        "send_keyboard_status not implemented. IME keyboard status: {}",
-        keyboard_status.0
-    );
+    let status = KeyboardStatus::from(keyboard_status);
+    DISPATCHER.dispatch(text_editor_proxy, |ime| ime.keyboard_status_changed(status));
 }
 
 pub extern "C" fn send_enter_key(

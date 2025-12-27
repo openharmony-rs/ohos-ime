@@ -17,7 +17,7 @@ mod text_editor;
 
 pub use crate::text_config::{TextConfig, TextConfigBuilder, TextSelection};
 use crate::text_editor::DISPATCHER;
-use log::error;
+use log::{error, warn};
 use ohos_ime_sys::attach_options::{
     InputMethod_AttachOptions, OH_AttachOptions_Create, OH_AttachOptions_Destroy,
     OH_AttachOptions_IsShowKeyboard,
@@ -38,7 +38,9 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSendEnterKeyFunc, OH_TextEditorProxy_SetSendKeyboardStatusFunc,
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
-use ohos_ime_sys::types::{InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType};
+use ohos_ime_sys::types::{
+    InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType, InputMethod_KeyboardStatus,
+};
 use std::fmt::Debug;
 use std::ptr::NonNull;
 
@@ -63,6 +65,11 @@ pub trait Ime: Send + Sync {
     /// This function will be called when the enter key is pressed and the associated label
     /// is passed, so that the application can handle it accordingly.
     fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType);
+
+    /// Called when the status of IME virtual keyboard changes.
+    fn keyboard_status_changed(&self, status: KeyboardStatus) {
+        log::debug!("Keyboard status changed to {:?}", status);
+    }
     // ...
 }
 
@@ -289,6 +296,34 @@ impl Drop for RawTextEditorProxy {
     fn drop(&mut self) {
         unsafe {
             OH_TextEditorProxy_Destroy(self.raw.as_ptr());
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum KeyboardStatus {
+    None,
+    Hidden,
+    Shown,
+    Unknown(u32),
+}
+
+impl From<InputMethod_KeyboardStatus> for KeyboardStatus {
+    fn from(status: InputMethod_KeyboardStatus) -> Self {
+        match status {
+            status if status == InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_NONE => {
+                KeyboardStatus::None
+            }
+            status if status == InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_HIDE => {
+                KeyboardStatus::Hidden
+            }
+            status if status == InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_SHOW => {
+                KeyboardStatus::Shown
+            }
+            status => {
+                warn!("Unknown keyboard status enum variant: {}", status.0);
+                KeyboardStatus::Unknown(status.0)
+            }
         }
     }
 }
