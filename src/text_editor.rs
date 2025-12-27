@@ -70,103 +70,6 @@ impl Dispatcher {
             .ok_or(DispatcherError::NotFound)
     }
 
-    fn insert_text(&self, text_editor_proxy: *mut InputMethod_TextEditorProxy, text: &[u16]) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
-        match ime {
-            Some(ime) => {
-                let rust_string = String::from_utf16(text);
-                match rust_string {
-                    Ok(s) => {
-                        ime.insert_text(s);
-                    }
-                    Err(e) => {
-                        error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
-                    }
-                }
-
-                let rust_text = String::new();
-                ime.insert_text(rust_text)
-            }
-            None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
-            }
-        }
-    }
-
-    fn delete_forward(&self, text_editor_proxy: *mut InputMethod_TextEditorProxy, length: i32) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
-        match ime {
-            Some(ime) => {
-                ime.delete_forward(length.max(0) as usize);
-            }
-            None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
-            }
-        }
-    }
-
-    fn delete_backward(&self, text_editor_proxy: *mut InputMethod_TextEditorProxy, length: i32) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
-        match ime {
-            Some(ime) => {
-                ime.delete_backward(length.max(0) as usize);
-            }
-            None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
-            }
-        }
-    }
-
-    fn get_text_config(
-        &self,
-        text_editor_proxy: *mut InputMethod_TextEditorProxy,
-        oh_config: *mut InputMethod_TextConfig,
-    ) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
-        match ime {
-            Some(ime) => {
-                let config = ime.get_text_config();
-                if let Err(e) = apply_text_config(config, oh_config) {
-                    error!("Failed to apply IME config in `get_text_config`: {e:?}");
-                }
-            }
-            None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
-            }
-        }
-    }
-
-    fn send_enter_key(
-        &self,
-        text_editor_proxy: *mut InputMethod_TextEditorProxy,
-        enter_key_type: InputMethod_EnterKeyType,
-    ) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
-        match ime {
-            Some(ime) => {
-                ime.send_enter_key(enter_key_type);
-            }
-            None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
-            }
-        }
-    }
-
     /// Helper function to dispatch a closure to the IME implementation.
     fn dispatch(
         &self,
@@ -225,10 +128,15 @@ fn apply_text_config(
 
 pub extern "C" fn get_text_config(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
-    config: *mut InputMethod_TextConfig,
+    out_config: *mut InputMethod_TextConfig,
 ) {
     info!("get_text_config: Getting IME text config");
-    DISPATCHER.get_text_config(text_editor_proxy, config);
+    DISPATCHER.dispatch(text_editor_proxy, |ime| {
+        let config = ime.get_text_config();
+        if let Err(e) = apply_text_config(config, out_config) {
+            error!("Failed to apply IME config in `get_text_config`: {e:?}");
+        }
+    });
 }
 
 pub extern "C" fn insert_text(
@@ -241,7 +149,20 @@ pub extern "C" fn insert_text(
         let utf16_str = slice_from_raw_parts(text, length);
         // SAFETY: We trust the OH APIs to give us a valid u16 slice
         if let Some(slice) = unsafe { utf16_str.as_ref() } {
-            DISPATCHER.insert_text(text_editor_proxy, slice);
+            DISPATCHER.dispatch(text_editor_proxy, |ime| {
+                let rust_string = String::from_utf16(slice);
+                match rust_string {
+                    Ok(s) => {
+                        ime.insert_text(s);
+                    }
+                    Err(e) => {
+                        error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
+                    }
+                }
+
+                let rust_text = String::new();
+                ime.insert_text(rust_text)
+            });
         } else {
             #[cfg(debug_assertions)]
             error!("insert_text received text slice with len {length} but addr {text:?}")
@@ -250,13 +171,25 @@ pub extern "C" fn insert_text(
 }
 
 pub extern "C" fn delete_forward(text_editor_proxy: *mut InputMethod_TextEditorProxy, length: i32) {
-    DISPATCHER.delete_forward(text_editor_proxy, length);
+    #[cfg(debug_assertions)]
+    if length < 0 {
+        log::warn!("delete_forward called with negative length: {}", length);
+    }
+    DISPATCHER.dispatch(text_editor_proxy, |ime| {
+        ime.delete_forward(length.max(0) as usize);
+    });
 }
 pub extern "C" fn delete_backward(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     length: i32,
 ) {
-    DISPATCHER.delete_backward(text_editor_proxy, length);
+    #[cfg(debug_assertions)]
+    if length < 0 {
+        log::warn!("delete_backward called with negative length: {}", length);
+    }
+    DISPATCHER.dispatch(text_editor_proxy, |ime| {
+        ime.delete_backward(length.max(0) as usize);
+    });
 }
 
 pub extern "C" fn send_keyboard_status(
@@ -271,7 +204,9 @@ pub extern "C" fn send_enter_key(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     enter_key_type: InputMethod_EnterKeyType,
 ) {
-    DISPATCHER.send_enter_key(text_editor_proxy, enter_key_type);
+    DISPATCHER.dispatch(text_editor_proxy, |ime| {
+        ime.send_enter_key(enter_key_type);
+    });
 }
 
 pub extern "C" fn move_cursor(
