@@ -22,7 +22,7 @@ use ohos_ime_sys::attach_options::{
     InputMethod_AttachOptions, OH_AttachOptions_Create, OH_AttachOptions_Destroy,
     OH_AttachOptions_IsShowKeyboard,
 };
-use ohos_ime_sys::controller::OH_InputMethodController_Attach;
+use ohos_ime_sys::controller::{OH_InputMethodController_Attach, OH_InputMethodController_Detach};
 use ohos_ime_sys::inputmethod_proxy::{
     InputMethod_InputMethodProxy, OH_InputMethodProxy_HideKeyboard,
     OH_InputMethodProxy_ShowKeyboard,
@@ -82,6 +82,11 @@ pub struct ImeProxy {
 
 impl Drop for ImeProxy {
     fn drop(&mut self) {
+        // We must first detach the InputMethodProxy, before dropping the TextEditorProxy.
+        // SAFETY: We own the raw pointer, with now oher references.
+        if let Err(e) = unsafe { OH_InputMethodController_Detach(self.raw.as_ptr()) } {
+            error!("IME: Detach failed for InputMethodController {:?}", e);
+        }
         let res = DISPATCHER.unregister(self.editor.raw);
         #[cfg(debug_assertions)]
         if let Err(e) = res {
