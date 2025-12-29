@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2
+
+- Fix a bug where OH_InputMethodController_Detach was not called before `OH_TextEditorProxy_Destroy`,
+  which caused segfaults in libinputmethod in some situations.
+
 ## v0.4.1
 
 - Update `Ime` trait with `keyboard_status_changed()`, which is called when the keyboard status changes.
