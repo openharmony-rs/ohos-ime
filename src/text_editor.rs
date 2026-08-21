@@ -150,18 +150,10 @@ pub extern "C" fn insert_text(
         // SAFETY: We trust the OH APIs to give us a valid u16 slice
         if let Some(slice) = unsafe { utf16_str.as_ref() } {
             DISPATCHER.dispatch(text_editor_proxy, |ime| {
-                let rust_string = String::from_utf16(slice);
-                match rust_string {
-                    Ok(s) => {
-                        ime.insert_text(s);
-                    }
-                    Err(e) => {
-                        error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
-                    }
+                if let Err(e) = crate::insert_text::apply_insert_text(slice, |s| ime.insert_text(s))
+                {
+                    error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
                 }
-
-                let rust_text = String::new();
-                ime.insert_text(rust_text)
             });
         } else {
             #[cfg(debug_assertions)]

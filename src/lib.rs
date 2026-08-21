@@ -12,6 +12,7 @@
 //!
 //! 1. Implement the Ime trait
 //! 2. call `ImeProxy::new()`
+mod insert_text;
 mod text_config;
 mod text_editor;
 
