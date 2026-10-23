@@ -14,6 +14,35 @@
 //! 2. Wrap it in a [`RawTextEditorProxy`]
 //! 3. call `ImeProxy::new()`
 //!
+//! ```no_run
+//! use ohos_ime::{AttachOptions, Ime, ImeProxy, InputMethod_EnterKeyType, RawTextEditorProxy};
+//! use ohos_ime::{TextConfig, TextConfigBuilder};
+//!
+//! struct Editor {
+//!     config: TextConfig,
+//! }
+//!
+//! impl Ime for Editor {
+//!     fn insert_text(&self, text: String) {
+//!         println!("insert {text:?}");
+//!     }
+//!     fn delete_forward(&self, len: usize) {}
+//!     fn delete_backward(&self, len: usize) {}
+//!     fn get_text_config(&self) -> &TextConfig {
+//!         &self.config
+//!     }
+//!     fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType) {}
+//! }
+//!
+//! let editor = Editor {
+//!     config: TextConfigBuilder::new().build(),
+//! };
+//! let editor = RawTextEditorProxy::new(Box::new(editor)).expect("out of memory");
+//! let proxy = ImeProxy::new(editor, AttachOptions::new(true)).expect("attach failed");
+//! // Dropping the proxy detaches the editor.
+//! drop(proxy);
+//! ```
+//!
 //! ## Text positions
 //!
 //! All indices, ranges and text lengths exchanged with the input method are in UTF-16 code units,
@@ -69,9 +98,11 @@ use ohos_ime_sys::text_editor_proxy::{
 };
 #[cfg(feature = "api-15")]
 use ohos_ime_sys::types::InputMethod_RequestKeyboardReason;
+pub use ohos_ime_sys::types::{
+    InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType, InputMethod_TextInputType,
+};
 use ohos_ime_sys::types::{
-    InputMethodErrorCode, InputMethodResult, InputMethod_Direction, InputMethod_EnterKeyType,
-    InputMethod_ExtendAction, InputMethod_KeyboardStatus, InputMethod_TextInputType,
+    InputMethod_Direction, InputMethod_ExtendAction, InputMethod_KeyboardStatus,
 };
 #[cfg(feature = "api-23")]
 pub use ohos_sys_opaque_types::ArkUI_ContextHandle;
