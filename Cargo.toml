@@ -9,11 +9,18 @@ keywords = ["OpenHarmony", "HarmonyOS", "IME", "inputmethod"]
 readme = "README.md"
 
 [dependencies]
-ohos-ime-sys = {  version = "0.2.0", features = ["api-12"]}
+ohos-ime-sys = {  version = "0.2.5", features = ["api-12"]}
+ohos-sys-opaque-types = { version = "0.1.12", optional = true }
 log = "0.4.22"
 
 [features]
 log = []
+# Each `api-N` feature requires OpenHarmony API level N on the device.
+api-15 = ["ohos-ime-sys/api-15"]
+api-20 = ["api-15", "ohos-ime-sys/api-20"]
+api-22 = ["api-20", "ohos-ime-sys/api-22"]
+api-23 = ["api-22", "ohos-ime-sys/api-23", "dep:ohos-sys-opaque-types"]
+api-26 = ["api-23", "ohos-ime-sys/api-26"]
 
 [package.metadata.docs.rs]
 targets = ["aarch64-unknown-linux-ohos", "armv7-unknown-linux-ohos", "x86_64-unknown-linux-ohos"]

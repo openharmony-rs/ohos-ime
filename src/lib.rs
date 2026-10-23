@@ -67,11 +67,17 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSendEnterKeyFunc, OH_TextEditorProxy_SetSendKeyboardStatusFunc,
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
+#[cfg(feature = "api-15")]
+use ohos_ime_sys::types::InputMethod_RequestKeyboardReason;
 use ohos_ime_sys::types::{
     InputMethodErrorCode, InputMethodResult, InputMethod_Direction, InputMethod_EnterKeyType,
     InputMethod_ExtendAction, InputMethod_KeyboardStatus, InputMethod_TextInputType,
 };
+#[cfg(feature = "api-23")]
+pub use ohos_sys_opaque_types::ArkUI_ContextHandle;
 use std::ffi::c_int;
+#[cfg(feature = "api-15")]
+use std::ffi::c_uint;
 use std::fmt::Debug;
 use std::ops::Range;
 use std::ptr::NonNull;
@@ -305,23 +311,19 @@ impl Debug for CreateImeProxyError {
     }
 }
 
-/// Attaches `editor`, requesting the text config from its [`Ime`] on the calling thread.
+/// Attaches `editor` with `attach`, which receives the out-pointer for the input method proxy.
+///
+/// The framework requests the text config from the [`Ime`] on the calling thread.
 fn attach_editor(
     editor: &RawTextEditorProxy,
-    options: &AttachOptions,
+    attach: impl FnOnce(
+        *mut InputMethod_TextEditorProxy,
+        *mut *mut InputMethod_InputMethodProxy,
+    ) -> InputMethodResult,
 ) -> Result<NonNull<InputMethod_InputMethodProxy>, InputMethodErrorCode> {
     let mut attached_proxy = ATTACH_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
-    // SAFETY: Both pointers are valid, and text editors are never destroyed, so the editor
-    // outlives every reference the framework keeps to it.
-    let result = unsafe {
-        OH_InputMethodController_Attach(
-            editor.raw.as_ptr(),
-            options.raw.as_ptr(),
-            &raw mut ime_proxy,
-        )
-    };
-    if let Err(e) = result {
+    if let Err(e) = attach(editor.raw.as_ptr(), &raw mut ime_proxy) {
         // The framework replaces the proxy of the previous editor before it attaches, so a failed
         // attach usually detached that editor too.
         let was_attached = attached_editor().is_some();
@@ -349,6 +351,49 @@ fn framework_accepts(proxy: usize) -> bool {
     result == Err(InputMethodErrorCode::NULL_POINTER)
 }
 
+/// Attaches with `OH_InputMethodController_Attach`.
+fn attach_with_options(
+    options: &AttachOptions,
+) -> impl FnOnce(
+    *mut InputMethod_TextEditorProxy,
+    *mut *mut InputMethod_InputMethodProxy,
+) -> InputMethodResult
+       + '_ {
+    move |editor, ime_proxy| {
+        // SAFETY: Both pointers are valid, and text editors are never destroyed, so the editor
+        // outlives every reference the framework keeps to it.
+        unsafe { OH_InputMethodController_Attach(editor, options.raw.as_ptr(), ime_proxy) }
+    }
+}
+
+/// Attaches with `OH_InputMethodController_AttachWithUIContext`.
+///
+/// # Safety
+///
+/// `context` must be a valid UI context.
+#[cfg(feature = "api-23")]
+unsafe fn attach_with_ui_context(
+    context: ArkUI_ContextHandle,
+    options: &AttachOptions,
+) -> impl FnOnce(
+    *mut InputMethod_TextEditorProxy,
+    *mut *mut InputMethod_InputMethodProxy,
+) -> InputMethodResult
+       + '_ {
+    move |editor, ime_proxy| {
+        // SAFETY: `context` is valid as guaranteed by the caller. See `attach_with_options` for
+        // the other pointers.
+        unsafe {
+            ohos_ime_sys::controller::OH_InputMethodController_AttachWithUIContext(
+                context,
+                editor,
+                options.raw.as_ptr(),
+                ime_proxy,
+            )
+        }
+    }
+}
+
 impl ImeProxy {
     /// Attaches `editor` to the input method, detaching any other editor.
     ///
@@ -357,7 +402,7 @@ impl ImeProxy {
         editor: RawTextEditorProxy,
         options: AttachOptions,
     ) -> Result<Self, CreateImeProxyError> {
-        match attach_editor(&editor, &options) {
+        match attach_editor(&editor, attach_with_options(&options)) {
             Ok(raw) => Ok(Self { raw, editor }),
             Err(error_code) => Err(CreateImeProxyError {
                 editor,
@@ -371,7 +416,49 @@ impl ImeProxy {
     ///
     /// The [`Ime`] is asked for its [`TextConfig`] again, on the calling thread.
     pub fn attach(&mut self, options: &AttachOptions) -> InputMethodResult {
-        self.raw = attach_editor(&self.editor, options)?;
+        self.raw = attach_editor(&self.editor, attach_with_options(options))?;
+        Ok(())
+    }
+
+    /// Like [`new`](Self::new), but the framework takes the window from the UI context of the
+    /// page that contains the editor.
+    ///
+    /// # Safety
+    ///
+    /// `context` must be a valid UI context.
+    #[cfg(feature = "api-23")]
+    pub unsafe fn new_with_ui_context(
+        context: ArkUI_ContextHandle,
+        editor: RawTextEditorProxy,
+        options: AttachOptions,
+    ) -> Result<Self, CreateImeProxyError> {
+        // SAFETY: Guaranteed by the caller.
+        let attach = unsafe { attach_with_ui_context(context, &options) };
+        match attach_editor(&editor, attach) {
+            Ok(raw) => Ok(Self { raw, editor }),
+            Err(error_code) => Err(CreateImeProxyError {
+                editor,
+                options,
+                error_code,
+            }),
+        }
+    }
+
+    /// Like [`attach`](Self::attach), but the framework takes the window from the UI context of
+    /// the page that contains the editor.
+    ///
+    /// # Safety
+    ///
+    /// `context` must be a valid UI context.
+    #[cfg(feature = "api-23")]
+    pub unsafe fn attach_with_ui_context(
+        &mut self,
+        context: ArkUI_ContextHandle,
+        options: &AttachOptions,
+    ) -> InputMethodResult {
+        // SAFETY: Guaranteed by the caller.
+        let attach = unsafe { attach_with_ui_context(context, options) };
+        self.raw = attach_editor(&self.editor, attach)?;
         Ok(())
     }
 
@@ -390,6 +477,18 @@ impl ImeProxy {
     pub fn show_keyboard(&self) -> InputMethodResult {
         // SAFETY: `with_raw` only passes a proxy that has not been invalidated by another attach.
         self.with_raw(|raw| unsafe { OH_InputMethodProxy_ShowKeyboard(raw) })
+    }
+
+    /// Shows the keyboard, telling the input method why it was requested.
+    #[cfg(feature = "api-15")]
+    pub fn show_text_input(&self, options: &AttachOptions) -> InputMethodResult {
+        // SAFETY: See `show_keyboard`. `options` is valid.
+        self.with_raw(|raw| unsafe {
+            ohos_ime_sys::inputmethod_proxy::OH_InputMethodProxy_ShowTextInput(
+                raw,
+                options.raw.as_ptr(),
+            )
+        })
     }
 
     pub fn hide_keyboard(&self) -> InputMethodResult {
@@ -496,6 +595,55 @@ pub enum KeyboardVisibility {
     Show,
 }
 
+/// The user interaction that requested the keyboard.
+#[cfg(feature = "api-15")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RequestKeyboardReason {
+    None,
+    Mouse,
+    Touch,
+    Other,
+}
+
+#[cfg(feature = "api-15")]
+impl RequestKeyboardReason {
+    fn to_raw(self) -> InputMethod_RequestKeyboardReason {
+        match self {
+            RequestKeyboardReason::None => {
+                InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_NONE
+            }
+            RequestKeyboardReason::Mouse => {
+                InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_MOUSE
+            }
+            RequestKeyboardReason::Touch => {
+                InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_TOUCH
+            }
+            RequestKeyboardReason::Other => {
+                InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_OTHER
+            }
+        }
+    }
+
+    fn from_raw(reason: c_int) -> Self {
+        let Ok(reason) = c_uint::try_from(reason) else {
+            return RequestKeyboardReason::None;
+        };
+        match InputMethod_RequestKeyboardReason(reason) {
+            InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_MOUSE => {
+                RequestKeyboardReason::Mouse
+            }
+            InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_TOUCH => {
+                RequestKeyboardReason::Touch
+            }
+            InputMethod_RequestKeyboardReason::IME_REQUEST_REASON_OTHER => {
+                RequestKeyboardReason::Other
+            }
+            _ => RequestKeyboardReason::None,
+        }
+    }
+}
+
 impl AttachOptions {
     pub fn new(show_keyboard: bool) -> Self {
         // SAFETY: No particular safety or other requirements.
@@ -505,6 +653,38 @@ impl AttachOptions {
             NonNull::new(raw).expect("OOM?")
         };
         Self { raw }
+    }
+
+    /// Like [`new`](Self::new), also telling the input method why the keyboard is requested.
+    #[cfg(feature = "api-15")]
+    pub fn with_request_keyboard_reason(
+        show_keyboard: bool,
+        reason: RequestKeyboardReason,
+    ) -> Self {
+        // SAFETY: See `new`.
+        let raw = unsafe {
+            let raw =
+                ohos_ime_sys::attach_options::OH_AttachOptions_CreateWithRequestKeyboardReason(
+                    show_keyboard,
+                    reason.to_raw(),
+                );
+            NonNull::new(raw).expect("OOM?")
+        };
+        Self { raw }
+    }
+
+    #[cfg(feature = "api-15")]
+    pub fn request_keyboard_reason(&self) -> RequestKeyboardReason {
+        let mut reason = 0;
+        // SAFETY: `self.raw` is valid, see `get_visibility`.
+        let err = unsafe {
+            ohos_ime_sys::attach_options::OH_AttachOptions_GetRequestKeyboardReason(
+                self.raw.as_ptr(),
+                &raw mut reason,
+            )
+        };
+        debug_assert!(err.is_ok());
+        RequestKeyboardReason::from_raw(reason)
     }
 
     pub fn get_visibility(&self) -> KeyboardVisibility {
@@ -576,6 +756,22 @@ impl RawTextEditorProxy {
         };
         DISPATCHER.register(raw, ime);
         Ok(Self { raw })
+    }
+
+    /// Run the [`Ime`] callbacks on the main thread instead of IPC threads.
+    ///
+    /// [`Ime::get_text_config`] always runs on the attaching thread. The framework then queues
+    /// [`Ime::set_preview_text`] and [`Ime::receive_private_command`] and tells the input method
+    /// that they succeeded, so an error from `set_preview_text` is not reported.
+    #[cfg(feature = "api-22")]
+    pub fn set_callback_in_main_thread(&mut self, in_main_thread: bool) -> InputMethodResult {
+        // SAFETY: `self.raw` is valid.
+        unsafe {
+            ohos_ime_sys::text_editor_proxy::OH_TextEditorProxy_SetCallbackInMainThread(
+                self.raw.as_ptr(),
+                in_main_thread,
+            )
+        }
     }
 
     fn addr(&self) -> usize {

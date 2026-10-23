@@ -31,6 +31,12 @@ pub(crate) fn head(text: &str, max_len: usize) -> Vec<u16> {
     units
 }
 
+/// Encodes `text` as UTF-16 followed by a NUL terminator.
+#[cfg(feature = "api-20")]
+pub(crate) fn nul_terminated(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain([0]).collect()
+}
+
 /// Copies `units` into a buffer provided by the framework and stores the copied length.
 ///
 /// # Safety
@@ -77,5 +83,15 @@ mod tests {
         assert_eq!(head("😀a", 1), Vec::<u16>::new());
         assert_eq!(head("😀a", 2), "😀".encode_utf16().collect::<Vec<_>>());
         assert_eq!(head("b😀", 2), vec![u16::from(b'b')]);
+    }
+
+    #[test]
+    #[cfg(feature = "api-20")]
+    fn nul_terminated_appends_nul() {
+        assert_eq!(
+            nul_terminated("ab"),
+            vec![u16::from(b'a'), u16::from(b'b'), 0]
+        );
+        assert_eq!(nul_terminated(""), vec![0]);
     }
 }

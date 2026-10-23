@@ -108,6 +108,16 @@ pub(crate) fn take_recycled() -> Option<NonNull<InputMethod_TextEditorProxy>> {
 }
 
 pub(crate) fn recycle(text_editor_proxy: NonNull<InputMethod_TextEditorProxy>) {
+    #[cfg(feature = "api-22")]
+    // SAFETY: Text editors are never destroyed.
+    if let Err(e) = unsafe {
+        ohos_ime_sys::text_editor_proxy::OH_TextEditorProxy_SetCallbackInMainThread(
+            text_editor_proxy.as_ptr(),
+            false,
+        )
+    } {
+        error!("Resetting the callback thread of a recycled text editor failed: {e:?}");
+    }
     RECYCLED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -123,6 +133,12 @@ pub enum ApplyTextConfigError {
     SetSelectioFailed,
     SetWindowIdFailed,
     SetTextAvoidInfoFailed,
+    #[cfg(feature = "api-20")]
+    SetPlaceholderFailed,
+    #[cfg(feature = "api-20")]
+    SetAbilityNameFailed,
+    #[cfg(feature = "api-26")]
+    SetConsumeKeyEventsFailed,
 }
 
 /// Writes `config` into the text config that the framework passed to `get_text_config`.
@@ -162,6 +178,31 @@ unsafe fn apply_text_config(
             .and_then(|()| OH_TextAvoidInfo_SetPositionY(avoid_info, 0.0))
             .and_then(|()| OH_TextAvoidInfo_SetHeight(avoid_info, 0.0))
             .map_err(|_e| ApplyTextConfigError::SetTextAvoidInfoFailed)?;
+        // The framework does not initialize the placeholder and ability name either. An empty
+        // string clears them.
+        #[cfg(feature = "api-20")]
+        {
+            let placeholder = utf16::nul_terminated(config.placeholder.as_deref().unwrap_or(""));
+            ohos_ime_sys::text_config::OH_TextConfig_SetPlaceholder(
+                oh_config,
+                placeholder.as_ptr(),
+                placeholder.len(),
+            )
+            .map_err(|_e| ApplyTextConfigError::SetPlaceholderFailed)?;
+            let ability_name = utf16::nul_terminated(config.ability_name.as_deref().unwrap_or(""));
+            ohos_ime_sys::text_config::OH_TextConfig_SetAbilityName(
+                oh_config,
+                ability_name.as_ptr(),
+                ability_name.len(),
+            )
+            .map_err(|_e| ApplyTextConfigError::SetAbilityNameFailed)?;
+        }
+        #[cfg(feature = "api-26")]
+        ohos_ime_sys::text_config::OH_TextConfig_SetConsumeKeyEvents(
+            oh_config,
+            config.consume_key_events,
+        )
+        .map_err(|_e| ApplyTextConfigError::SetConsumeKeyEventsFailed)?;
     }
     Ok(())
 }

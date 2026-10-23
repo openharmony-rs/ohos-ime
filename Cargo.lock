@@ -14,10 +14,20 @@ version = "0.4.2"
 dependencies = [
  "log",
  "ohos-ime-sys",
+ "ohos-sys-opaque-types",
 ]
 
 [[package]]
 name = "ohos-ime-sys"
-version = "0.2.0"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89d326ae2b2e71f95ca756b7d418c0adcb0018889e73f7eabed59671cb179608"
+checksum = "0e8e993b646acbe695b213f840418adf9c6b67c5be7f139ebaa7aa15465a18f7"
+dependencies = [
+ "ohos-sys-opaque-types",
+]
+
+[[package]]
+name = "ohos-sys-opaque-types"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9bcb2b286419c28f51401c39807cd035999472e8fd07b23878209eebd990851"

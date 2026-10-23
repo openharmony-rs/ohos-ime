@@ -302,6 +302,67 @@ fn dropped_editors_are_reused_only_after_a_delay() {
     assert_eq!(take(&old_events), []);
 }
 
+fn fake_attach(
+    _editor: *mut InputMethod_TextEditorProxy,
+    ime_proxy: *mut *mut InputMethod_InputMethodProxy,
+) -> InputMethodResult {
+    // SAFETY: `attach_editor` passes a valid out-pointer.
+    unsafe { ime_proxy.write(NonNull::dangling().as_ptr()) };
+    Ok(())
+}
+
+/// An `ImeProxy` attached without the framework. Its proxy pointer is dangling, so it may only reach
+/// the framework where the framework compares it to its own proxy without using it.
+fn fake_attached_proxy() -> ImeProxy {
+    let (editor, _) = new_editor();
+    let raw = attach_editor(&editor, fake_attach).unwrap();
+    ImeProxy { raw, editor }
+}
+
+/// Drops a proxy from `fake_attached_proxy` without calling the framework.
+fn drop_fake(proxy: ImeProxy) {
+    let mut attached = attached_editor();
+    if *attached == Some(proxy.editor.addr()) {
+        *attached = None;
+    }
+    drop(attached);
+    drop(proxy);
+}
+
+#[test]
+fn attaching_another_editor_makes_the_previous_proxy_inert() {
+    let _serial = serial();
+    let a = fake_attached_proxy();
+    assert_eq!(a.with_raw(|_| Ok(())), Ok(()));
+    let b = fake_attached_proxy();
+    assert_eq!(
+        a.with_raw(|_| panic!("used a superseded proxy")),
+        Err(InputMethodErrorCode::DETACHED)
+    );
+    assert_eq!(b.with_raw(|_| Ok(())), Ok(()));
+    // Dropping the superseded proxy neither calls the framework nor detaches `b`.
+    drop(a);
+    assert_eq!(*attached_editor(), Some(b.editor.addr()));
+    drop_fake(b);
+}
+
+#[test]
+fn failed_attach_detaches_the_previous_editor() {
+    let _serial = serial();
+    let a = fake_attached_proxy();
+    let (b, _) = new_editor();
+    assert_eq!(
+        attach_editor(&b, |_, _| Err(InputMethodErrorCode::PARAMCHECK)),
+        Err(InputMethodErrorCode::PARAMCHECK)
+    );
+    // The framework does not accept the fake proxy of `a`, like a proxy it replaced.
+    assert_eq!(
+        a.with_raw(|_| panic!("used a detached proxy")),
+        Err(InputMethodErrorCode::DETACHED)
+    );
+    assert_eq!(*attached_editor(), None);
+}
+
 #[test]
 fn failed_attach_returns_the_editor() {
     let _serial = serial();
@@ -315,4 +376,152 @@ fn failed_attach_returns_the_editor() {
     assert_eq!(*attached_editor(), attached);
     insert(&error.editor, &utf16("a"));
     assert_eq!(take(&events), [Event::Insert("a".into())]);
+}
+
+#[test]
+fn text_config_is_applied() {
+    use ohos_ime_sys::text_config::*;
+    use ohos_ime_sys::types::InputMethod_TextInputType;
+    let _serial = serial();
+    let builder = TextConfigBuilder::new()
+        .input_type(InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_EMAIL_ADDRESS)
+        .enterkey_type(InputMethod_EnterKeyType::IME_ENTER_KEY_SEARCH)
+        .preview_text_support(true)
+        .selection(TextSelection::new(2, 5).ok().unwrap())
+        .window_id(42);
+    #[cfg(feature = "api-20")]
+    let builder = builder.placeholder("Søk 😀").ability_name("EntryAbility");
+    #[cfg(feature = "api-26")]
+    let builder = builder.consume_key_events(true);
+    let ime = Recorder {
+        events: Default::default(),
+        config: builder.build(),
+    };
+    let editor = RawTextEditorProxy::new(Box::new(ime)).unwrap();
+
+    // SAFETY: `config` is created and destroyed here, and all out-pointers point to locals.
+    unsafe {
+        let config = OH_TextConfig_Create();
+        assert!(!config.is_null());
+        get_text_config(editor.raw.as_ptr(), config);
+
+        let mut input_type = InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_NONE;
+        OH_TextConfig_GetInputType(config, &raw mut input_type).unwrap();
+        assert_eq!(
+            input_type,
+            InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_EMAIL_ADDRESS
+        );
+        let mut enter_key = InputMethod_EnterKeyType::IME_ENTER_KEY_UNSPECIFIED;
+        OH_TextConfig_GetEnterKeyType(config, &raw mut enter_key).unwrap();
+        assert_eq!(enter_key, InputMethod_EnterKeyType::IME_ENTER_KEY_SEARCH);
+        let mut preview = false;
+        OH_TextConfig_IsPreviewTextSupported(config, &raw mut preview).unwrap();
+        assert!(preview);
+        let (mut start, mut end) = (0, 0);
+        OH_TextConfig_GetSelection(config, &raw mut start, &raw mut end).unwrap();
+        assert_eq!((start, end), (2, 5));
+        let mut window_id = 0;
+        OH_TextConfig_GetWindowId(config, &raw mut window_id).unwrap();
+        assert_eq!(window_id, 42);
+
+        #[cfg(feature = "api-20")]
+        {
+            let mut buffer = [0u16; 256];
+            let mut length = buffer.len();
+            OH_TextConfig_GetPlaceholder(config, buffer.as_mut_ptr(), &raw mut length).unwrap();
+            assert_eq!(
+                &buffer[..length],
+                &crate::utf16::nul_terminated("Søk 😀")[..]
+            );
+            let mut length = buffer.len();
+            OH_TextConfig_GetAbilityName(config, buffer.as_mut_ptr(), &raw mut length).unwrap();
+            assert_eq!(
+                &buffer[..length],
+                &crate::utf16::nul_terminated("EntryAbility")[..]
+            );
+        }
+        #[cfg(feature = "api-26")]
+        {
+            let mut consume = false;
+            OH_TextConfig_GetConsumeKeyEvents(config, &raw mut consume).unwrap();
+            assert!(consume);
+        }
+        OH_TextConfig_Destroy(config);
+    }
+}
+
+/// The framework does not initialize the text config it passes, so unset fields must be written.
+#[test]
+fn unset_text_config_fields_are_reset() {
+    use ohos_ime_sys::text_avoid_info::*;
+    use ohos_ime_sys::text_config::*;
+    let _serial = serial();
+    let (editor, _) = new_editor();
+
+    // SAFETY: `config` is created and destroyed here, and all out-pointers point to locals.
+    unsafe {
+        let config = OH_TextConfig_Create();
+        assert!(!config.is_null());
+        OH_TextConfig_SetSelection(config, 5, 9).unwrap();
+        OH_TextConfig_SetWindowId(config, 77).unwrap();
+        let mut avoid_info = std::ptr::null_mut();
+        OH_TextConfig_GetTextAvoidInfo(config, &raw mut avoid_info).unwrap();
+        OH_TextAvoidInfo_SetPositionY(avoid_info, 3.0).unwrap();
+        OH_TextAvoidInfo_SetHeight(avoid_info, 4.0).unwrap();
+        #[cfg(feature = "api-20")]
+        {
+            let stale = crate::utf16::nul_terminated("stale");
+            OH_TextConfig_SetPlaceholder(config, stale.as_ptr(), stale.len()).unwrap();
+            OH_TextConfig_SetAbilityName(config, stale.as_ptr(), stale.len()).unwrap();
+        }
+
+        get_text_config(editor.raw.as_ptr(), config);
+
+        let (mut start, mut end) = (0, 0);
+        OH_TextConfig_GetSelection(config, &raw mut start, &raw mut end).unwrap();
+        assert_eq!((start, end), (-1, -1));
+        let mut window_id = 0;
+        OH_TextConfig_GetWindowId(config, &raw mut window_id).unwrap();
+        assert_eq!(window_id, 0);
+        let (mut position_y, mut height) = (1.0, 1.0);
+        OH_TextAvoidInfo_GetPositionY(avoid_info, &raw mut position_y).unwrap();
+        OH_TextAvoidInfo_GetHeight(avoid_info, &raw mut height).unwrap();
+        assert_eq!((position_y, height), (0.0, 0.0));
+        #[cfg(feature = "api-20")]
+        {
+            let mut buffer = [1u16; 256];
+            let mut length = buffer.len();
+            OH_TextConfig_GetPlaceholder(config, buffer.as_mut_ptr(), &raw mut length).unwrap();
+            assert_eq!(&buffer[..length], &[0]);
+            let mut length = buffer.len();
+            OH_TextConfig_GetAbilityName(config, buffer.as_mut_ptr(), &raw mut length).unwrap();
+            assert_eq!(&buffer[..length], &[0]);
+        }
+        OH_TextConfig_Destroy(config);
+    }
+}
+
+#[cfg(feature = "api-15")]
+#[test]
+fn request_keyboard_reason_round_trips() {
+    let _serial = serial();
+    for reason in [
+        RequestKeyboardReason::None,
+        RequestKeyboardReason::Mouse,
+        RequestKeyboardReason::Touch,
+        RequestKeyboardReason::Other,
+    ] {
+        let options = AttachOptions::with_request_keyboard_reason(true, reason);
+        assert_eq!(options.request_keyboard_reason(), reason);
+        assert!(matches!(options.get_visibility(), KeyboardVisibility::Show));
+    }
+}
+
+#[cfg(feature = "api-22")]
+#[test]
+fn callback_in_main_thread_can_be_set() {
+    let _serial = serial();
+    let (mut editor, _) = new_editor();
+    editor.set_callback_in_main_thread(true).unwrap();
+    editor.set_callback_in_main_thread(false).unwrap();
 }
