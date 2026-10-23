@@ -5,9 +5,11 @@ pub use crate::text_config::{TextConfig, TextConfigBuilder};
 use crate::{Ime, KeyboardStatus};
 use log::{debug, error, info, trace, warn};
 use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
+use ohos_ime_sys::text_avoid_info::{OH_TextAvoidInfo_SetHeight, OH_TextAvoidInfo_SetPositionY};
 use ohos_ime_sys::text_config::{
-    InputMethod_TextConfig, OH_TextConfig_SetEnterKeyType, OH_TextConfig_SetInputType,
-    OH_TextConfig_SetPreviewTextSupport, OH_TextConfig_SetSelection, OH_TextConfig_SetWindowId,
+    InputMethod_TextConfig, OH_TextConfig_GetTextAvoidInfo, OH_TextConfig_SetEnterKeyType,
+    OH_TextConfig_SetInputType, OH_TextConfig_SetPreviewTextSupport, OH_TextConfig_SetSelection,
+    OH_TextConfig_SetWindowId,
 };
 use ohos_ime_sys::text_editor_proxy::InputMethod_TextEditorProxy;
 use ohos_ime_sys::types::{
@@ -97,12 +99,22 @@ pub enum ApplyTextConfigError {
     SetPreviewTextSupportFailed,
     SetSelectioFailed,
     SetWindowIdFailed,
+    SetTextAvoidInfoFailed,
 }
 
-fn apply_text_config(
+/// Writes `config` into the text config that the framework passed to `get_text_config`.
+///
+/// The framework does not initialize the selection, window ID and avoid area, so they are written
+/// even if `config` leaves them unset.
+///
+/// # Safety
+///
+/// `oh_config` must be a valid text config.
+unsafe fn apply_text_config(
     config: &TextConfig,
     oh_config: *mut InputMethod_TextConfig,
 ) -> Result<(), ApplyTextConfigError> {
+    // SAFETY: `oh_config` is valid, as guaranteed by the caller.
     unsafe {
         OH_TextConfig_SetInputType(oh_config, config.input_type)
             .map_err(|_e| ApplyTextConfigError::SetInputTypeFailed)?;
@@ -113,15 +125,20 @@ fn apply_text_config(
         OH_TextConfig_SetPreviewTextSupport(oh_config, config.preview_text_support)
             .map_err(|_e| ApplyTextConfigError::SetPreviewTextSupportFailed)?;
 
-        if let Some(selection) = &config.selection {
-            OH_TextConfig_SetSelection(oh_config, selection.start, selection.end)
-                .map_err(|_e| ApplyTextConfigError::SetSelectioFailed);
-        }
-        if let Some(window_id) = config.window_id {
-            // let's see if this is optional...
-            OH_TextConfig_SetWindowId(oh_config, window_id)
-                .map_err(|_e| ApplyTextConfigError::SetWindowIdFailed)?;
-        }
+        // -1 is the framework's `INVALID_VALUE`, and 0 its `INVALID_WINDOW_ID`.
+        let (start, end) = config
+            .selection
+            .as_ref()
+            .map_or((-1, -1), |selection| (selection.start, selection.end));
+        OH_TextConfig_SetSelection(oh_config, start, end)
+            .map_err(|_e| ApplyTextConfigError::SetSelectioFailed)?;
+        OH_TextConfig_SetWindowId(oh_config, config.window_id.unwrap_or(0))
+            .map_err(|_e| ApplyTextConfigError::SetWindowIdFailed)?;
+        let mut avoid_info = std::ptr::null_mut();
+        OH_TextConfig_GetTextAvoidInfo(oh_config, &raw mut avoid_info)
+            .and_then(|()| OH_TextAvoidInfo_SetPositionY(avoid_info, 0.0))
+            .and_then(|()| OH_TextAvoidInfo_SetHeight(avoid_info, 0.0))
+            .map_err(|_e| ApplyTextConfigError::SetTextAvoidInfoFailed)?;
     }
     Ok(())
 }
@@ -133,7 +150,8 @@ pub extern "C" fn get_text_config(
     info!("get_text_config: Getting IME text config");
     DISPATCHER.dispatch(text_editor_proxy, |ime| {
         let config = ime.get_text_config();
-        if let Err(e) = apply_text_config(config, out_config) {
+        // SAFETY: The framework passes a valid text config.
+        if let Err(e) = unsafe { apply_text_config(config, out_config) } {
             error!("Failed to apply IME config in `get_text_config`: {e:?}");
         }
     });
@@ -159,9 +177,6 @@ pub extern "C" fn insert_text(
                         error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
                     }
                 }
-
-                let rust_text = String::new();
-                ime.insert_text(rust_text)
             });
         } else {
             #[cfg(debug_assertions)]
@@ -238,9 +253,8 @@ pub extern "C" fn get_left_text_of_cursor(
     length: *mut usize,
 ) {
     error!("get_left_text_of_cursor not implemented");
-    unsafe {
-        *text = 0;
-        *length = 1;
+    if !length.is_null() {
+        unsafe { *length = 0 };
     }
 }
 
@@ -251,9 +265,8 @@ pub extern "C" fn get_right_text_of_cursor(
     length: *mut usize,
 ) {
     error!("get_right_text_of_cursor not implemented");
-    unsafe {
-        *text = 0;
-        *length = 1;
+    if !length.is_null() {
+        unsafe { *length = 0 };
     }
 }
 
@@ -270,11 +283,6 @@ pub extern "C" fn receive_private_command(
     size: usize,
 ) -> i32 {
     error!("receive_private_command not implemented");
-    if !private_command.is_null() {
-        unsafe {
-            *private_command = core::ptr::null_mut();
-        }
-    }
     0
 }
 
