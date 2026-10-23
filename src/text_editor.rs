@@ -18,7 +18,7 @@ use ohos_ime_sys::types::{
 };
 use std::collections::HashMap;
 use std::ptr::{slice_from_raw_parts, NonNull};
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{Arc, PoisonError, RwLock};
 
 pub(crate) static DISPATCHER: Dispatcher = Dispatcher::new();
 
@@ -26,14 +26,12 @@ pub(crate) static DISPATCHER: Dispatcher = Dispatcher::new();
 pub(crate) enum DispatcherError {
     Uninitialized,
     NotFound,
-    LockPoisoned,
 }
 
 pub(crate) struct Dispatcher {
-    map: RwLock<Option<HashMap<usize, Box<dyn super::Ime>>>>,
+    map: RwLock<Option<HashMap<usize, Arc<dyn super::Ime>>>>,
 }
 
-// todo: proper error handling, propogation. etc.
 impl Dispatcher {
     const fn new() -> Self {
         Self {
@@ -47,11 +45,10 @@ impl Dispatcher {
         ime: Box<dyn Ime>,
     ) {
         debug!("Registering IME");
-        // Todo: remove unwrap and make register() fallible.
-        let mut map = self.map.write().unwrap();
+        let mut map = self.map.write().unwrap_or_else(PoisonError::into_inner);
         let res = map
             .get_or_insert_with(HashMap::new)
-            .insert(c_proxy.as_ptr() as usize, ime);
+            .insert(c_proxy.as_ptr() as usize, Arc::from(ime));
         if res.is_some() {
             warn!("Double insert of IME text editor. Dropping the old one");
         }
@@ -60,32 +57,35 @@ impl Dispatcher {
     pub(crate) fn unregister(
         &self,
         c_proxy: NonNull<InputMethod_TextEditorProxy>,
-    ) -> Result<Box<dyn Ime>, DispatcherError> {
+    ) -> Result<Arc<dyn Ime>, DispatcherError> {
         debug!("Unregistering IME");
-        let mut map = self
-            .map
-            .write()
-            .map_err(|_| DispatcherError::LockPoisoned)?;
+        let mut map = self.map.write().unwrap_or_else(PoisonError::into_inner);
         map.as_mut()
             .ok_or(DispatcherError::Uninitialized)?
             .remove(&(c_proxy.as_ptr() as usize))
             .ok_or(DispatcherError::NotFound)
     }
 
-    /// Helper function to dispatch a closure to the IME implementation.
-    fn dispatch(
+    /// Calls `f` with the IME implementation registered for `text_editor_proxy`.
+    ///
+    /// No lock is held while `f` runs, so the implementation may create or drop editors.
+    fn dispatch<R>(
         &self,
         text_editor_proxy: *mut InputMethod_TextEditorProxy,
-        f: impl FnOnce(&Box<dyn Ime>),
-    ) {
-        let map = self.map.read().unwrap();
-        let ime = map
-            .as_ref()
-            .and_then(|m| m.get(&(text_editor_proxy as usize)));
+        f: impl FnOnce(&dyn Ime) -> R,
+    ) -> Option<R> {
+        let ime = {
+            let map = self.map.read().unwrap_or_else(PoisonError::into_inner);
+            map.as_ref()
+                .and_then(|m| m.get(&(text_editor_proxy as usize)))
+                .cloned()
+        };
         match ime {
-            Some(ime) => f(ime),
+            Some(ime) => Some(f(&*ime)),
             None => {
-                error!("IME dispatcher called, but no IME implementation registered!")
+                // Expected for callbacks that race with dropping the editor.
+                debug!("IME dispatcher called, but no IME implementation registered!");
+                None
             }
         }
     }
