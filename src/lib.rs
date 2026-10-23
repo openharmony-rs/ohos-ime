@@ -25,7 +25,7 @@ use ohos_ime_sys::attach_options::{
 use ohos_ime_sys::controller::{OH_InputMethodController_Attach, OH_InputMethodController_Detach};
 use ohos_ime_sys::inputmethod_proxy::{
     InputMethod_InputMethodProxy, OH_InputMethodProxy_HideKeyboard,
-    OH_InputMethodProxy_ShowKeyboard,
+    OH_InputMethodProxy_NotifyCursorUpdate, OH_InputMethodProxy_ShowKeyboard,
 };
 use ohos_ime_sys::text_editor_proxy::{
     InputMethod_TextEditorProxy, OH_TextEditorProxy_Create, OH_TextEditorProxy_Destroy,
@@ -43,6 +43,7 @@ use ohos_ime_sys::types::{
 };
 use std::fmt::Debug;
 use std::ptr::NonNull;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 // Todo: Well, honestly we really need to clarify the required sematics on the IME.
 /// User implementation of required Inputmethod functionality
@@ -73,27 +74,65 @@ pub trait Ime: Send + Sync {
     // ...
 }
 
+/// Address of the text editor that this crate last attached, if it has not been detached since.
+///
+/// The input method framework attaches at most one text editor per process: attaching another
+/// editor invalidates the previous `InputMethod_InputMethodProxy`.
+static ATTACHED_EDITOR: Mutex<Option<usize>> = Mutex::new(None);
+
+/// Serializes attaching, so that `ATTACHED_EDITOR` names the editor the framework attached last.
+/// Holds the address of the input method proxy of that attach.
+///
+/// Separate from `ATTACHED_EDITOR`, which callbacks that run during an attach may need.
+static ATTACH_LOCK: Mutex<usize> = Mutex::new(0);
+
+fn attached_editor() -> MutexGuard<'static, Option<usize>> {
+    ATTACHED_EDITOR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A text editor attached to the input method.
+///
+/// Only one editor is attached at a time. Attaching another editor detaches this one, usually
+/// even if that attach fails: its methods then fail with [`InputMethodErrorCode::DETACHED`] until
+/// it is [re-attached](Self::attach), and dropping it leaves the other editor attached.
+///
+/// The framework may also detach the editor by itself, e.g. when an ArkUI text field gains
+/// focus. Methods then fail with [`InputMethodErrorCode::DETACHED`] too.
+///
+/// Dropping the attached `ImeProxy` detaches the editor, unless the framework already detached
+/// it. The C API cannot check and detach atomically, so if an ArkUI text field attaches between
+/// the two, its input session is closed. ArkUI attaches on the main thread, so drop the
+/// `ImeProxy` on the main thread to avoid this.
 pub struct ImeProxy {
     raw: NonNull<InputMethod_InputMethodProxy>,
-    // keep the text editor alive.
-    #[allow(dead_code)]
     editor: RawTextEditorProxy,
 }
 
 impl Drop for ImeProxy {
     fn drop(&mut self) {
-        // We must first detach the InputMethodProxy, before dropping the TextEditorProxy.
-        // SAFETY: We own the raw pointer, with now oher references.
-        if let Err(e) = unsafe { OH_InputMethodController_Detach(self.raw.as_ptr()) } {
+        {
+            let mut attached = attached_editor();
+            if *attached != Some(self.editor.addr()) {
+                return;
+            }
+            *attached = None;
+        }
+        let raw = self.raw.as_ptr();
+        // If the framework detached the editor by itself, `Detach` would end the input session
+        // of the text field that took over, so only detach if the editor is still attached.
+        // SAFETY: `raw` is the proxy of our last attach. If another editor was attached since we
+        // checked, the framework rejects `raw` by comparing it to its current proxy; it never
+        // dereferences the pointer.
+        if unsafe { OH_InputMethodProxy_HideKeyboard(raw) } == Err(InputMethodErrorCode::DETACHED) {
+            return;
+        }
+        // SAFETY: As above. Detach may synchronously call back into the editor, which stays
+        // registered until `self.editor` is dropped after this function.
+        if let Err(e) = unsafe { OH_InputMethodController_Detach(raw) } {
             error!("IME: Detach failed for InputMethodController {:?}", e);
         }
-        let res = DISPATCHER.unregister(self.editor.raw);
-        #[cfg(debug_assertions)]
-        if let Err(e) = res {
-            error!("IME: ImeProxy destroy failed {:?}", e);
-        }
-        #[cfg(not(debug_assertions))]
-        drop(res)
     }
 }
 
@@ -109,40 +148,96 @@ impl Debug for CreateImeProxyError {
     }
 }
 
+/// Attaches `editor`, requesting the text config from its [`Ime`] on the calling thread.
+fn attach_editor(
+    editor: &RawTextEditorProxy,
+    options: &AttachOptions,
+) -> Result<NonNull<InputMethod_InputMethodProxy>, InputMethodErrorCode> {
+    let mut attached_proxy = ATTACH_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
+    // SAFETY: Both pointers are valid, and text editors are never destroyed, so the editor
+    // outlives every reference the framework keeps to it.
+    let result = unsafe {
+        OH_InputMethodController_Attach(
+            editor.raw.as_ptr(),
+            options.raw.as_ptr(),
+            &raw mut ime_proxy,
+        )
+    };
+    if let Err(e) = result {
+        // The framework replaces the proxy of the previous editor before it attaches, so a failed
+        // attach usually detached that editor too.
+        let was_attached = attached_editor().is_some();
+        if was_attached && !framework_accepts(*attached_proxy) {
+            *attached_editor() = None;
+        }
+        return Err(e);
+    }
+    *attached_proxy = ime_proxy as usize;
+    *attached_editor() = Some(editor.addr());
+    // We checked the returncode above, so the pointer should be valid and non-null now.
+    Ok(NonNull::new(ime_proxy).expect("Wrong Errorcode"))
+}
+
+/// Whether the framework still accepts `proxy` as the proxy of an attached editor.
+fn framework_accepts(proxy: usize) -> bool {
+    // SAFETY: The framework compares `proxy` to its current proxy and returns before it uses it or
+    // reads the null cursor info, so this notifies nothing.
+    let result = unsafe {
+        OH_InputMethodProxy_NotifyCursorUpdate(
+            proxy as *mut InputMethod_InputMethodProxy,
+            core::ptr::null_mut(),
+        )
+    };
+    result == Err(InputMethodErrorCode::NULL_POINTER)
+}
+
 impl ImeProxy {
-    // todo: maybe use builder pattern instead.
+    /// Attaches `editor` to the input method, detaching any other editor.
+    ///
+    /// The [`Ime`] of `editor` is asked for its [`TextConfig`] on the calling thread.
     pub fn new(
         editor: RawTextEditorProxy,
         options: AttachOptions,
     ) -> Result<Self, CreateImeProxyError> {
-        unsafe {
-            let mut ime_proxy: *mut InputMethod_InputMethodProxy = core::ptr::null_mut();
-            if let Err(error_code) = OH_InputMethodController_Attach(
-                editor.raw.as_ptr(),
-                options.raw.as_ptr(),
-                &raw mut ime_proxy,
-            ) {
-                return Err(CreateImeProxyError {
-                    editor,
-                    options,
-                    error_code,
-                });
-            }
-
-            Ok(Self {
-                // We checked the returncode above, so the pointer should be valid and non-null now.
-                raw: NonNull::new(ime_proxy).expect("Wrong Errorcode"),
+        match attach_editor(&editor, &options) {
+            Ok(raw) => Ok(Self { raw, editor }),
+            Err(error_code) => Err(CreateImeProxyError {
                 editor,
-            })
+                options,
+                error_code,
+            }),
         }
     }
 
+    /// Re-attaches the editor, e.g. after it was detached by another editor or the framework.
+    ///
+    /// The [`Ime`] is asked for its [`TextConfig`] again, on the calling thread.
+    pub fn attach(&mut self, options: &AttachOptions) -> InputMethodResult {
+        self.raw = attach_editor(&self.editor, options)?;
+        Ok(())
+    }
+
+    /// Calls `f` with the input method proxy if this editor is the attached one.
+    fn with_raw(
+        &self,
+        f: impl FnOnce(*mut InputMethod_InputMethodProxy) -> InputMethodResult,
+    ) -> InputMethodResult {
+        let attached = attached_editor();
+        if *attached != Some(self.editor.addr()) {
+            return Err(InputMethodErrorCode::DETACHED);
+        }
+        f(self.raw.as_ptr())
+    }
+
     pub fn show_keyboard(&self) -> InputMethodResult {
-        unsafe { OH_InputMethodProxy_ShowKeyboard(self.raw.as_ptr()) }
+        // SAFETY: `with_raw` only passes a proxy that has not been invalidated by another attach.
+        self.with_raw(|raw| unsafe { OH_InputMethodProxy_ShowKeyboard(raw) })
     }
 
     pub fn hide_keyboard(&self) -> InputMethodResult {
-        unsafe { OH_InputMethodProxy_HideKeyboard(self.raw.as_ptr()) }
+        // SAFETY: See `show_keyboard`.
+        self.with_raw(|raw| unsafe { OH_InputMethodProxy_HideKeyboard(raw) })
     }
 }
 
@@ -199,11 +294,8 @@ impl Drop for AttachOptions {
     }
 }
 
-// Very raw bindings. To be replaced with something better!
-// Ideally we want to provide a Rust trait, user provides a rust implementation,
-// and we somehow create a C-ABI wrapper around the trait implementations.
-// Brain-storming: We could make One generic C-ABI implementation here, and then lookup
-// the Rust impl based on the TextEditorProxy pointer.
+/// An [`Ime`] implementation registered with a native text editor, ready to be attached
+/// with [`ImeProxy::new`].
 pub struct RawTextEditorProxy {
     raw: NonNull<InputMethod_TextEditorProxy>,
 }
@@ -229,77 +321,78 @@ impl Debug for CreateTextEditorProxyError {
 
 impl RawTextEditorProxy {
     pub fn new(ime: Box<dyn Ime>) -> Result<Self, CreateTextEditorProxyError> {
-        let raw_proxy = unsafe { OH_TextEditorProxy_Create() };
-        let Some(raw_proxy) = NonNull::new(raw_proxy) else {
-            let err = Err(CreateTextEditorProxyError {
-                ime,
-                reason: CreateTextEditorProxyErrorKind::CreateProxyFailed,
-            });
-            return err;
+        let raw = match text_editor::take_recycled() {
+            Some(raw) => raw,
+            None => match create_text_editor() {
+                Ok(raw) => raw,
+                Err(reason) => return Err(CreateTextEditorProxyError { ime, reason }),
+            },
         };
-        let mut proxy = Self { raw: raw_proxy };
-        if let Err(e) = proxy.register_dispatcher_callbacks() {
-            return Err(CreateTextEditorProxyError {
-                ime,
-                reason: CreateTextEditorProxyErrorKind::RegisterCallbacksFailed(e),
-            });
-        }
-        DISPATCHER.register(proxy.raw, ime);
-        Ok(proxy)
+        DISPATCHER.register(raw, ime);
+        Ok(Self { raw })
     }
 
-    fn register_dispatcher_callbacks(&mut self) -> InputMethodResult {
-        use text_editor::*;
-        unsafe {
-            OH_TextEditorProxy_SetGetTextConfigFunc(self.raw.as_ptr(), Some(get_text_config))?;
-            OH_TextEditorProxy_SetInsertTextFunc(self.raw.as_ptr(), Some(insert_text))?;
-            OH_TextEditorProxy_SetDeleteForwardFunc(self.raw.as_ptr(), Some(delete_forward))?;
-            OH_TextEditorProxy_SetDeleteBackwardFunc(self.raw.as_ptr(), Some(delete_backward))?;
-            OH_TextEditorProxy_SetSendKeyboardStatusFunc(
-                self.raw.as_ptr(),
-                Some(send_keyboard_status),
-            )?;
-            OH_TextEditorProxy_SetSendEnterKeyFunc(self.raw.as_ptr(), Some(send_enter_key))?;
-            OH_TextEditorProxy_SetMoveCursorFunc(self.raw.as_ptr(), Some(move_cursor))?;
-            OH_TextEditorProxy_SetHandleSetSelectionFunc(
-                self.raw.as_ptr(),
-                Some(handle_set_selection),
-            )?;
-            OH_TextEditorProxy_SetHandleExtendActionFunc(
-                self.raw.as_ptr(),
-                Some(handle_extend_action),
-            )?;
-            OH_TextEditorProxy_SetGetLeftTextOfCursorFunc(
-                self.raw.as_ptr(),
-                Some(get_left_text_of_cursor),
-            )?;
-            OH_TextEditorProxy_SetGetRightTextOfCursorFunc(
-                self.raw.as_ptr(),
-                Some(get_right_text_of_cursor),
-            )?;
-            OH_TextEditorProxy_SetGetTextIndexAtCursorFunc(
-                self.raw.as_ptr(),
-                Some(get_text_index_at_cursor),
-            )?;
-            OH_TextEditorProxy_SetReceivePrivateCommandFunc(
-                self.raw.as_ptr(),
-                Some(receive_private_command),
-            )?;
-            OH_TextEditorProxy_SetSetPreviewTextFunc(self.raw.as_ptr(), Some(set_preview_text))?;
-            OH_TextEditorProxy_SetFinishTextPreviewFunc(
-                self.raw.as_ptr(),
-                Some(finish_text_preview),
-            )?;
-            Ok(())
-        }
+    fn addr(&self) -> usize {
+        self.raw.as_ptr() as usize
+    }
+}
+
+fn create_text_editor(
+) -> Result<NonNull<InputMethod_TextEditorProxy>, CreateTextEditorProxyErrorKind> {
+    // SAFETY: No preconditions.
+    let raw = NonNull::new(unsafe { OH_TextEditorProxy_Create() })
+        .ok_or(CreateTextEditorProxyErrorKind::CreateProxyFailed)?;
+    if let Err(e) = register_dispatcher_callbacks(raw) {
+        // SAFETY: The editor was never attached, so nothing else references it.
+        unsafe { OH_TextEditorProxy_Destroy(raw.as_ptr()) };
+        return Err(CreateTextEditorProxyErrorKind::RegisterCallbacksFailed(e));
+    }
+    Ok(raw)
+}
+
+fn register_dispatcher_callbacks(raw: NonNull<InputMethod_TextEditorProxy>) -> InputMethodResult {
+    use text_editor::*;
+    unsafe {
+        OH_TextEditorProxy_SetGetTextConfigFunc(raw.as_ptr(), Some(get_text_config))?;
+        OH_TextEditorProxy_SetInsertTextFunc(raw.as_ptr(), Some(insert_text))?;
+        OH_TextEditorProxy_SetDeleteForwardFunc(raw.as_ptr(), Some(delete_forward))?;
+        OH_TextEditorProxy_SetDeleteBackwardFunc(raw.as_ptr(), Some(delete_backward))?;
+        OH_TextEditorProxy_SetSendKeyboardStatusFunc(raw.as_ptr(), Some(send_keyboard_status))?;
+        OH_TextEditorProxy_SetSendEnterKeyFunc(raw.as_ptr(), Some(send_enter_key))?;
+        OH_TextEditorProxy_SetMoveCursorFunc(raw.as_ptr(), Some(move_cursor))?;
+        OH_TextEditorProxy_SetHandleSetSelectionFunc(raw.as_ptr(), Some(handle_set_selection))?;
+        OH_TextEditorProxy_SetHandleExtendActionFunc(raw.as_ptr(), Some(handle_extend_action))?;
+        OH_TextEditorProxy_SetGetLeftTextOfCursorFunc(raw.as_ptr(), Some(get_left_text_of_cursor))?;
+        OH_TextEditorProxy_SetGetRightTextOfCursorFunc(
+            raw.as_ptr(),
+            Some(get_right_text_of_cursor),
+        )?;
+        OH_TextEditorProxy_SetGetTextIndexAtCursorFunc(
+            raw.as_ptr(),
+            Some(get_text_index_at_cursor),
+        )?;
+        OH_TextEditorProxy_SetReceivePrivateCommandFunc(
+            raw.as_ptr(),
+            Some(receive_private_command),
+        )?;
+        OH_TextEditorProxy_SetSetPreviewTextFunc(raw.as_ptr(), Some(set_preview_text))?;
+        OH_TextEditorProxy_SetFinishTextPreviewFunc(raw.as_ptr(), Some(finish_text_preview))?;
+        Ok(())
     }
 }
 
 impl Drop for RawTextEditorProxy {
     fn drop(&mut self) {
-        unsafe {
-            OH_TextEditorProxy_Destroy(self.raw.as_ptr());
+        let res = DISPATCHER.unregister(self.raw);
+        #[cfg(debug_assertions)]
+        if let Err(e) = res {
+            error!("IME: RawTextEditorProxy unregister failed {:?}", e);
         }
+        #[cfg(not(debug_assertions))]
+        drop(res);
+        // The framework may still reference the editor after `Detach`, e.g. from callbacks that are
+        // in flight, so it is recycled instead of destroyed.
+        text_editor::recycle(self.raw);
     }
 }
 
