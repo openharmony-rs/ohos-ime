@@ -238,15 +238,13 @@ impl RawTextEditorProxy {
             return err;
         };
         let mut proxy = Self { raw: raw_proxy };
-        DISPATCHER.register(proxy.raw, ime);
-        proxy.register_dispatcher_callbacks().map_err(|e| {
-            // unregistering here should never fail
-            let ime = DISPATCHER.unregister(proxy.raw).expect("Unregister failed");
-            CreateTextEditorProxyError {
+        if let Err(e) = proxy.register_dispatcher_callbacks() {
+            return Err(CreateTextEditorProxyError {
                 ime,
                 reason: CreateTextEditorProxyErrorKind::RegisterCallbacksFailed(e),
-            }
-        })?;
+            });
+        }
+        DISPATCHER.register(proxy.raw, ime);
         Ok(proxy)
     }
 
