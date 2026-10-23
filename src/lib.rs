@@ -11,10 +11,36 @@
 //! ## Usage
 //!
 //! 1. Implement the Ime trait
-//! 2. call `ImeProxy::new()`
+//! 2. Wrap it in a [`RawTextEditorProxy`]
+//! 3. call `ImeProxy::new()`
+//!
+//! ## Text positions
+//!
+//! All indices, ranges and text lengths exchanged with the input method are in UTF-16 code units,
+//! like the DOM's `selectionStart` and `selectionEnd`. Only the lengths of
+//! [`Ime::delete_forward`] and [`Ime::delete_backward`] count characters.
+//!
+//! ## Threading
+//!
+//! [`Ime`] callbacks run on IPC threads of the input method framework, possibly concurrently, unless
+//! the editor is configured to receive them on the main thread (API 22). The exception is
+//! [`Ime::get_text_config`], which runs on the thread that attaches the editor.
+//!
+//! Callbacks that return a value are answered while the input method waits. Answer them from
+//! editor state cached in the [`Ime`] implementation instead of waiting for another event loop.
+//!
+//! Some callbacks run synchronously inside [`ImeProxy::new`], [`ImeProxy::attach`] and the drop
+//! of an [`ImeProxy`], on the calling thread: [`Ime::get_text_config`], and
+//! [`Ime::finish_text_preview`] and [`Ime::keyboard_status_changed`] of the editor that gets
+//! detached. These must not create, attach or drop an [`ImeProxy`], or call its methods.
+mod private_command;
+#[cfg(test)]
+mod tests;
 mod text_config;
 mod text_editor;
+mod utf16;
 
+pub use crate::private_command::{PrivateCommand, PrivateCommandValue, MAX_PRIVATE_COMMANDS};
 pub use crate::text_config::{TextConfig, TextConfigBuilder, TextSelection};
 use crate::text_editor::DISPATCHER;
 use log::{error, warn};
@@ -23,9 +49,12 @@ use ohos_ime_sys::attach_options::{
     OH_AttachOptions_IsShowKeyboard,
 };
 use ohos_ime_sys::controller::{OH_InputMethodController_Attach, OH_InputMethodController_Detach};
+use ohos_ime_sys::cursor_info::{OH_CursorInfo_Create, OH_CursorInfo_Destroy};
 use ohos_ime_sys::inputmethod_proxy::{
     InputMethod_InputMethodProxy, OH_InputMethodProxy_HideKeyboard,
-    OH_InputMethodProxy_NotifyCursorUpdate, OH_InputMethodProxy_ShowKeyboard,
+    OH_InputMethodProxy_NotifyConfigurationChange, OH_InputMethodProxy_NotifyCursorUpdate,
+    OH_InputMethodProxy_NotifySelectionChange, OH_InputMethodProxy_SendPrivateCommand,
+    OH_InputMethodProxy_ShowKeyboard,
 };
 use ohos_ime_sys::text_editor_proxy::{
     InputMethod_TextEditorProxy, OH_TextEditorProxy_Create, OH_TextEditorProxy_Destroy,
@@ -39,39 +68,167 @@ use ohos_ime_sys::text_editor_proxy::{
     OH_TextEditorProxy_SetSetPreviewTextFunc,
 };
 use ohos_ime_sys::types::{
-    InputMethodErrorCode, InputMethodResult, InputMethod_EnterKeyType, InputMethod_KeyboardStatus,
+    InputMethodErrorCode, InputMethodResult, InputMethod_Direction, InputMethod_EnterKeyType,
+    InputMethod_ExtendAction, InputMethod_KeyboardStatus, InputMethod_TextInputType,
 };
+use std::ffi::c_int;
 use std::fmt::Debug;
+use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-// Todo: Well, honestly we really need to clarify the required sematics on the IME.
 /// User implementation of required Inputmethod functionality
+///
+/// Only the required methods are needed for basic text input. The provided methods ignore the
+/// request, or answer that there is no text around the cursor.
 pub trait Ime: Send + Sync {
-    /// Insert `text` at the current cursor position.
+    /// Insert `text` at the current cursor position, replacing the selection or preview text.
+    ///
+    /// `text` may be empty.
     fn insert_text(&self, text: String);
-    /// Delete the next `len` `char`s(?) starting at the current cursor position
+    /// Delete `len` characters after the cursor.
+    ///
+    /// ArkUI text fields count code points, and an emoji sequence as one character.
     fn delete_forward(&self, len: usize);
 
-    /// Delete the previous `len` `char`s(?) before the current cursor position
+    /// Delete `len` characters before the cursor.
+    ///
+    /// ArkUI text fields count code points, and an emoji sequence as one character.
     fn delete_backward(&self, len: usize);
 
     /// Return the text configuration associated with the current IME
+    ///
+    /// Called on the attaching thread each time the editor is attached, see
+    /// [Threading](crate#threading).
     fn get_text_config(&self) -> &TextConfig;
 
     /// Process the enter key variant pressed by the user.
     ///
-    /// Depending on the configuration (applied by the implementation of [`get_text_config()`])
-    /// the enterkey label displayed to the user varies.
+    /// Depending on the configuration (applied by the implementation of
+    /// [`get_text_config()`](Self::get_text_config)) the enterkey label displayed to the user
+    /// varies.
     /// This function will be called when the enter key is pressed and the associated label
     /// is passed, so that the application can handle it accordingly.
     fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType);
 
     /// Called when the status of IME virtual keyboard changes.
+    ///
+    /// Detaching the editor may report [`KeyboardStatus::Hidden`] synchronously, on the detaching
+    /// thread.
     fn keyboard_status_changed(&self, status: KeyboardStatus) {
         log::debug!("Keyboard status changed to {:?}", status);
     }
-    // ...
+
+    /// Move the cursor by one step, e.g. for arrow keys handled by the input method.
+    fn move_cursor(&self, direction: Direction) {
+        log::debug!("Ignoring move_cursor({direction:?})");
+    }
+
+    /// Select the text from `start` to `end`.
+    fn set_selection(&self, start: usize, end: usize) {
+        log::debug!("Ignoring set_selection({start}, {end})");
+    }
+
+    /// Perform an editing action, like copying the selection.
+    fn handle_extend_action(&self, action: ExtendAction) {
+        log::debug!("Ignoring handle_extend_action({action:?})");
+    }
+
+    /// Return up to `max_len` UTF-16 code units of the text before the cursor.
+    ///
+    /// Longer text is truncated at its start.
+    fn text_before_cursor(&self, _max_len: usize) -> String {
+        String::new()
+    }
+
+    /// Return up to `max_len` UTF-16 code units of the text after the cursor.
+    ///
+    /// Longer text is truncated at its end.
+    fn text_after_cursor(&self, _max_len: usize) -> String {
+        String::new()
+    }
+
+    /// Return the position of the cursor in the text.
+    fn text_index_at_cursor(&self) -> usize {
+        0
+    }
+
+    /// Show `text` as preview text, which the input method may still change, e.g. while
+    /// composing CJK text.
+    ///
+    /// `range` is the text that `text` replaces. `None` replaces the current preview text, or
+    /// inserts at the cursor if there is none. If `range` is empty, `text` is inserted at its
+    /// start. While there is preview text, `range` lies within it.
+    ///
+    /// Only called if [`TextConfigBuilder::preview_text_support`] is enabled. Return an error if
+    /// `range` is invalid; the input method is told synchronously, so validate against cached
+    /// state.
+    fn set_preview_text(
+        &self,
+        _text: String,
+        _range: Option<Range<usize>>,
+    ) -> Result<(), PreviewTextError> {
+        Err(PreviewTextError)
+    }
+
+    /// Keep the current preview text as regular text.
+    ///
+    /// Also called when the editor is detached while it has preview text, possibly synchronously,
+    /// see [Threading](crate#threading).
+    fn finish_text_preview(&self) {}
+
+    /// Handle private commands sent by the input method application.
+    fn receive_private_command(&self, commands: Vec<PrivateCommand>) {
+        log::debug!("Ignoring private commands {commands:?}");
+    }
+}
+
+/// The preview text could not be set.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PreviewTextError;
+
+/// A cursor movement requested by the input method.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl Direction {
+    fn from_raw(direction: InputMethod_Direction) -> Option<Self> {
+        match direction {
+            InputMethod_Direction::IME_DIRECTION_UP => Some(Direction::Up),
+            InputMethod_Direction::IME_DIRECTION_DOWN => Some(Direction::Down),
+            InputMethod_Direction::IME_DIRECTION_LEFT => Some(Direction::Left),
+            InputMethod_Direction::IME_DIRECTION_RIGHT => Some(Direction::Right),
+            _ => None,
+        }
+    }
+}
+
+/// An editing action requested by the input method.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExtendAction {
+    SelectAll,
+    Cut,
+    Copy,
+    Paste,
+}
+
+impl ExtendAction {
+    fn from_raw(action: InputMethod_ExtendAction) -> Option<Self> {
+        match action {
+            InputMethod_ExtendAction::IME_EXTEND_ACTION_SELECT_ALL => Some(ExtendAction::SelectAll),
+            InputMethod_ExtendAction::IME_EXTEND_ACTION_CUT => Some(ExtendAction::Cut),
+            InputMethod_ExtendAction::IME_EXTEND_ACTION_COPY => Some(ExtendAction::Copy),
+            InputMethod_ExtendAction::IME_EXTEND_ACTION_PASTE => Some(ExtendAction::Paste),
+            _ => None,
+        }
+    }
 }
 
 /// Address of the text editor that this crate last attached, if it has not been detached since.
@@ -239,6 +396,95 @@ impl ImeProxy {
         // SAFETY: See `show_keyboard`.
         self.with_raw(|raw| unsafe { OH_InputMethodProxy_HideKeyboard(raw) })
     }
+
+    /// Tells the input method that the text or the selection changed.
+    ///
+    /// `text` is the whole text, at most [`MAX_TEXT_LENGTH`] UTF-16 code units, and `start` and
+    /// `end` are positions in it.
+    pub fn notify_selection_change(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+    ) -> InputMethodResult {
+        let (Ok(start), Ok(end)) = (c_int::try_from(start), c_int::try_from(end)) else {
+            return Err(InputMethodErrorCode::PARAMCHECK);
+        };
+        let mut text: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: See `show_keyboard`. `text` is valid for `text.len()` code units, and the
+        // framework copies it.
+        self.with_raw(|raw| unsafe {
+            OH_InputMethodProxy_NotifySelectionChange(
+                raw,
+                text.as_mut_ptr(),
+                text.len(),
+                start,
+                end,
+            )
+        })
+    }
+
+    /// Tells the input method that the enter key or text input type changed.
+    pub fn notify_configuration_change(
+        &self,
+        enter_key: InputMethod_EnterKeyType,
+        input_type: InputMethod_TextInputType,
+    ) -> InputMethodResult {
+        // SAFETY: See `show_keyboard`.
+        self.with_raw(|raw| unsafe {
+            OH_InputMethodProxy_NotifyConfigurationChange(raw, enter_key, input_type)
+        })
+    }
+
+    /// Tells the input method where the cursor is, e.g. to place the candidate window.
+    pub fn notify_cursor_update(&self, cursor: CursorRect) -> InputMethodResult {
+        self.with_raw(|raw| {
+            // SAFETY: No preconditions.
+            let info = unsafe {
+                OH_CursorInfo_Create(cursor.left, cursor.top, cursor.width, cursor.height)
+            };
+            if info.is_null() {
+                return Err(InputMethodErrorCode::NULL_POINTER);
+            }
+            // SAFETY: See `show_keyboard`. `info` is valid, and the framework copies it.
+            let result = unsafe { OH_InputMethodProxy_NotifyCursorUpdate(raw, info) };
+            // SAFETY: We created `info` and don't use it afterwards.
+            unsafe { OH_CursorInfo_Destroy(info) };
+            result
+        })
+    }
+
+    /// Sends private commands to the input method application.
+    ///
+    /// At most [`MAX_PRIVATE_COMMANDS`] commands with a total size of 32 KiB can be sent at once.
+    pub fn send_private_command(&self, commands: &[PrivateCommand]) -> InputMethodResult {
+        let raw_commands = commands
+            .iter()
+            .map(PrivateCommand::to_raw)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut pointers: Vec<_> = raw_commands
+            .iter()
+            .map(|command| command.as_ptr())
+            .collect();
+        // SAFETY: See `show_keyboard`. `pointers` holds `pointers.len()` valid commands, which the
+        // framework copies.
+        self.with_raw(|raw| unsafe {
+            OH_InputMethodProxy_SendPrivateCommand(raw, pointers.as_mut_ptr(), pointers.len())
+        })
+    }
+}
+
+/// Maximum number of UTF-16 code units the framework exchanges at once, e.g. the text of
+/// [`ImeProxy::notify_selection_change`].
+pub const MAX_TEXT_LENGTH: usize = 8 * 1024;
+
+/// The cursor rectangle, in absolute physical screen coordinates.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct CursorRect {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 pub struct AttachOptions {
@@ -352,6 +598,8 @@ fn create_text_editor(
 
 fn register_dispatcher_callbacks(raw: NonNull<InputMethod_TextEditorProxy>) -> InputMethodResult {
     use text_editor::*;
+    // SAFETY: `raw` is a valid text editor. The callbacks are `extern "C"` functions with the
+    // signatures the framework expects.
     unsafe {
         OH_TextEditorProxy_SetGetTextConfigFunc(raw.as_ptr(), Some(get_text_config))?;
         OH_TextEditorProxy_SetInsertTextFunc(raw.as_ptr(), Some(insert_text))?;

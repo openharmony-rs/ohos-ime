@@ -1,9 +1,8 @@
-// TODO:
-// - switch to parking lot and uns MutexGuard::map or owning_ref to reduce some of duplicate code here.
-#![allow(unused)]
-pub use crate::text_config::{TextConfig, TextConfigBuilder};
-use crate::{Ime, KeyboardStatus};
-use log::{debug, error, info, trace, warn};
+use crate::text_config::TextConfig;
+use crate::{
+    utf16, Direction, ExtendAction, Ime, KeyboardStatus, PreviewTextError, PrivateCommand,
+};
+use log::{debug, error, info, warn};
 use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
 use ohos_ime_sys::text_avoid_info::{OH_TextAvoidInfo_SetHeight, OH_TextAvoidInfo_SetPositionY};
 use ohos_ime_sys::text_config::{
@@ -17,7 +16,7 @@ use ohos_ime_sys::types::{
     InputMethod_KeyboardStatus,
 };
 use std::collections::{HashMap, VecDeque};
-use std::ptr::{slice_from_raw_parts, NonNull};
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 pub(crate) static DISPATCHER: Dispatcher = Dispatcher::new();
@@ -167,45 +166,41 @@ unsafe fn apply_text_config(
     Ok(())
 }
 
-pub extern "C" fn get_text_config(
+/// # Safety
+///
+/// `out_config` must be a valid text config.
+pub unsafe extern "C" fn get_text_config(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     out_config: *mut InputMethod_TextConfig,
 ) {
     info!("get_text_config: Getting IME text config");
     DISPATCHER.dispatch(text_editor_proxy, |ime| {
         let config = ime.get_text_config();
-        // SAFETY: The framework passes a valid text config.
+        // SAFETY: Guaranteed by the caller.
         if let Err(e) = unsafe { apply_text_config(config, out_config) } {
             error!("Failed to apply IME config in `get_text_config`: {e:?}");
         }
     });
 }
 
-pub extern "C" fn insert_text(
+/// # Safety
+///
+/// If `text` is not null, it must point to `length` UTF-16 code units.
+pub unsafe extern "C" fn insert_text(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     text: *const u16,
-    // `length` % 2 == 0 does not hold, so this seems to be number u16 codepoints.
     length: usize,
 ) {
-    if length > 0 {
-        let utf16_str = slice_from_raw_parts(text, length);
-        // SAFETY: We trust the OH APIs to give us a valid u16 slice
-        if let Some(slice) = unsafe { utf16_str.as_ref() } {
-            DISPATCHER.dispatch(text_editor_proxy, |ime| {
-                let rust_string = String::from_utf16(slice);
-                match rust_string {
-                    Ok(s) => {
-                        ime.insert_text(s);
-                    }
-                    Err(e) => {
-                        error!("IME `insert_text` received malformed utf-16 string: {e:?} ");
-                    }
-                }
-            });
-        } else {
-            #[cfg(debug_assertions)]
-            error!("insert_text received text slice with len {length} but addr {text:?}")
+    // SAFETY: Guaranteed by the caller.
+    let Some(text) = (unsafe { slice_or_empty(text, length) }) else {
+        error!("insert_text received text slice with len {length} but a null pointer");
+        return;
+    };
+    match String::from_utf16(text) {
+        Ok(text) => {
+            DISPATCHER.dispatch(text_editor_proxy, |ime| ime.insert_text(text));
         }
+        Err(e) => error!("IME `insert_text` received malformed utf-16 string: {e:?} "),
     }
 }
 
@@ -252,7 +247,11 @@ pub extern "C" fn move_cursor(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     direction: InputMethod_Direction,
 ) {
-    error!("move_cursor not implemented");
+    let Some(direction) = Direction::from_raw(direction) else {
+        debug!("Ignoring move_cursor with direction {}", direction.0);
+        return;
+    };
+    DISPATCHER.dispatch(text_editor_proxy, |ime| ime.move_cursor(direction));
 }
 
 pub extern "C" fn handle_set_selection(
@@ -260,67 +259,191 @@ pub extern "C" fn handle_set_selection(
     start: i32,
     end: i32,
 ) {
-    error!("handle_text_selection not implemented");
+    let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
+        warn!("Ignoring set_selection with negative position ({start}, {end})");
+        return;
+    };
+    DISPATCHER.dispatch(text_editor_proxy, |ime| ime.set_selection(start, end));
 }
 
 pub extern "C" fn handle_extend_action(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     action: InputMethod_ExtendAction,
 ) {
-    error!("handle_extend_action not implemented");
+    let Some(action) = ExtendAction::from_raw(action) else {
+        warn!("Ignoring unknown extend action {}", action.0);
+        return;
+    };
+    DISPATCHER.dispatch(text_editor_proxy, |ime| ime.handle_extend_action(action));
 }
 
-pub extern "C" fn get_left_text_of_cursor(
+/// Answers a surrounding-text query with at most `number` code units.
+///
+/// # Safety
+///
+/// `length` must be null or valid for writes, and if `text` is not null, it must be valid for
+/// writing `number` code units.
+unsafe fn answer_text_query(
+    text_editor_proxy: *mut InputMethod_TextEditorProxy,
+    number: i32,
+    text: *mut u16,
+    length: *mut usize,
+    query: impl FnOnce(&dyn Ime, usize) -> Vec<u16>,
+) {
+    if length.is_null() {
+        return;
+    }
+    let units = match usize::try_from(number) {
+        Ok(max_len) if !text.is_null() => {
+            DISPATCHER.dispatch(text_editor_proxy, |ime| query(ime, max_len))
+        }
+        _ => None,
+    };
+    let units = units
+        .filter(|units| units.len() <= number as usize)
+        .unwrap_or_default();
+    // SAFETY: `length` is not null, and `units` is either empty or at most `number` code units
+    // long and `text` is not null, as guaranteed by the caller.
+    unsafe { utf16::write(&units, text, length) };
+}
+
+/// # Safety
+///
+/// The framework's contract: `length` is null or valid for writes, and `text` is null or valid
+/// for writing `number` code units.
+pub unsafe extern "C" fn get_left_text_of_cursor(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     number: i32,
     text: *mut u16,
     length: *mut usize,
 ) {
-    error!("get_left_text_of_cursor not implemented");
-    if !length.is_null() {
-        unsafe { *length = 0 };
-    }
+    // SAFETY: Guaranteed by the caller.
+    unsafe {
+        answer_text_query(text_editor_proxy, number, text, length, |ime, max_len| {
+            utf16::tail(&ime.text_before_cursor(max_len), max_len)
+        })
+    };
 }
 
-pub extern "C" fn get_right_text_of_cursor(
+/// # Safety
+///
+/// See [`get_left_text_of_cursor`].
+pub unsafe extern "C" fn get_right_text_of_cursor(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     number: i32,
     text: *mut u16,
     length: *mut usize,
 ) {
-    error!("get_right_text_of_cursor not implemented");
-    if !length.is_null() {
-        unsafe { *length = 0 };
-    }
+    // SAFETY: Guaranteed by the caller.
+    unsafe {
+        answer_text_query(text_editor_proxy, number, text, length, |ime, max_len| {
+            utf16::head(&ime.text_after_cursor(max_len), max_len)
+        })
+    };
 }
 
 pub extern "C" fn get_text_index_at_cursor(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
 ) -> i32 {
-    error!("get_text_index_at_cursor stubbed");
-    0
+    DISPATCHER
+        .dispatch(text_editor_proxy, |ime| ime.text_index_at_cursor())
+        .map_or(0, |index| i32::try_from(index).unwrap_or(i32::MAX))
 }
 
-pub extern "C" fn receive_private_command(
+/// # Safety
+///
+/// If `private_command` is not null, it must point to `size` command pointers, each null or valid
+/// for the duration of the call.
+pub unsafe extern "C" fn receive_private_command(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     private_command: *mut *mut InputMethod_PrivateCommand,
     size: usize,
 ) -> i32 {
-    error!("receive_private_command not implemented");
+    // SAFETY: Guaranteed by the caller.
+    let Some(raw_commands) = (unsafe { slice_or_empty(private_command, size) }) else {
+        return 0;
+    };
+    let commands = raw_commands
+        .iter()
+        .filter_map(|raw| NonNull::new(*raw))
+        // SAFETY: Guaranteed by the caller.
+        .filter_map(|raw| unsafe { PrivateCommand::from_raw(raw) })
+        .collect();
+    DISPATCHER.dispatch(text_editor_proxy, |ime| {
+        ime.receive_private_command(commands)
+    });
     0
 }
 
-pub extern "C" fn set_preview_text(
+/// Value of the framework's `PREVIEW_BAD_PARAMETERS`, which ArkUI text fields return as well.
+const PREVIEW_BAD_PARAMETERS: i32 = -1;
+
+/// # Safety
+///
+/// If `text` is not null, it must point to `length` UTF-16 code units.
+pub unsafe extern "C" fn set_preview_text(
     text_editor_proxy: *mut InputMethod_TextEditorProxy,
     text: *const u16,
     length: usize,
     start: i32,
     end: i32,
 ) -> i32 {
-    error!("set_preview_text not implemented");
-    0
+    let range = match (start, end) {
+        (-1, -1) => None,
+        (start, end) => match (usize::try_from(start), usize::try_from(end)) {
+            (Ok(start), Ok(end)) if start <= end => Some(start..end),
+            _ => {
+                warn!("set_preview_text received invalid range ({start}, {end})");
+                return PREVIEW_BAD_PARAMETERS;
+            }
+        },
+    };
+    // SAFETY: Guaranteed by the caller.
+    let Some(text) = (unsafe { slice_or_empty(text, length) }) else {
+        return PREVIEW_BAD_PARAMETERS;
+    };
+    let text = match String::from_utf16(text) {
+        Ok(text) => text,
+        Err(e) => {
+            error!("IME `set_preview_text` received malformed utf-16 string: {e:?}");
+            return PREVIEW_BAD_PARAMETERS;
+        }
+    };
+    match DISPATCHER.dispatch(text_editor_proxy, |ime| ime.set_preview_text(text, range)) {
+        Some(Ok(())) => 0,
+        Some(Err(PreviewTextError)) | None => PREVIEW_BAD_PARAMETERS,
+    }
 }
 
 pub extern "C" fn finish_text_preview(text_editor_proxy: *mut InputMethod_TextEditorProxy) {
-    error!("finish_text_preview not implemented");
+    DISPATCHER.dispatch(text_editor_proxy, |ime| ime.finish_text_preview());
+}
+
+/// Builds a slice from a pointer and length received from the framework.
+///
+/// Returns `None` for a null pointer with a non-zero length.
+///
+/// # Safety
+///
+/// If `ptr` is not null, it must point to `len` initialized elements that stay valid for `'a`.
+unsafe fn slice_or_empty<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
+    match NonNull::new(ptr.cast_mut()) {
+        // SAFETY: Guaranteed by the caller.
+        Some(ptr) => Some(unsafe { std::slice::from_raw_parts(ptr.as_ptr(), len) }),
+        None => (len == 0).then_some(&[]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_or_empty_handles_null() {
+        // SAFETY: Null pointers are never dereferenced.
+        unsafe {
+            assert_eq!(slice_or_empty::<u16>(std::ptr::null(), 0), Some(&[][..]));
+            assert_eq!(slice_or_empty::<u16>(std::ptr::null(), 1), None);
+        }
+    }
 }
