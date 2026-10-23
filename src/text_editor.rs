@@ -16,9 +16,9 @@ use ohos_ime_sys::types::{
     InputMethod_Direction, InputMethod_EnterKeyType, InputMethod_ExtendAction,
     InputMethod_KeyboardStatus,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ptr::{slice_from_raw_parts, NonNull};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 pub(crate) static DISPATCHER: Dispatcher = Dispatcher::new();
 
@@ -89,6 +89,30 @@ impl Dispatcher {
             }
         }
     }
+}
+
+/// Number of unused text editors kept before the oldest one is reused.
+///
+/// The framework keeps raw pointers to text editors, e.g. in callbacks that are in flight, so
+/// reusing a recently dropped editor could route those callbacks to the new editor's `Ime`.
+pub(crate) const RECYCLE_DELAY: usize = 64;
+
+/// Addresses of unused text editors, oldest first, with the dispatcher callbacks registered.
+static RECYCLED: Mutex<VecDeque<usize>> = Mutex::new(VecDeque::new());
+
+pub(crate) fn take_recycled() -> Option<NonNull<InputMethod_TextEditorProxy>> {
+    let mut recycled = RECYCLED.lock().unwrap_or_else(PoisonError::into_inner);
+    if recycled.len() <= RECYCLE_DELAY {
+        return None;
+    }
+    NonNull::new(recycled.pop_front()? as *mut InputMethod_TextEditorProxy)
+}
+
+pub(crate) fn recycle(text_editor_proxy: NonNull<InputMethod_TextEditorProxy>) {
+    RECYCLED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push_back(text_editor_proxy.as_ptr() as usize);
 }
 
 #[derive(Debug)]
