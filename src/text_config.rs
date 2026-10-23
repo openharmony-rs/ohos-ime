@@ -37,6 +37,12 @@ pub struct TextConfig {
     pub(crate) preview_text_support: bool,
     pub(crate) selection: Option<TextSelection>,
     pub(crate) window_id: Option<i32>,
+    #[cfg(feature = "api-20")]
+    pub(crate) placeholder: Option<String>,
+    #[cfg(feature = "api-20")]
+    pub(crate) ability_name: Option<String>,
+    #[cfg(feature = "api-26")]
+    pub(crate) consume_key_events: bool,
 }
 
 impl Default for TextConfig {
@@ -51,6 +57,12 @@ pub struct TextConfigBuilder {
     preview_text_support: bool,
     selection: Option<TextSelection>,
     window_id: Option<i32>,
+    #[cfg(feature = "api-20")]
+    placeholder: Option<String>,
+    #[cfg(feature = "api-20")]
+    ability_name: Option<String>,
+    #[cfg(feature = "api-26")]
+    consume_key_events: bool,
 }
 
 impl TextConfigBuilder {
@@ -61,6 +73,12 @@ impl TextConfigBuilder {
             preview_text_support: false,
             selection: None,
             window_id: None,
+            #[cfg(feature = "api-20")]
+            placeholder: None,
+            #[cfg(feature = "api-20")]
+            ability_name: None,
+            #[cfg(feature = "api-26")]
+            consume_key_events: false,
         }
     }
 
@@ -72,6 +90,12 @@ impl TextConfigBuilder {
             preview_text_support: self.preview_text_support,
             selection: self.selection.clone(),
             window_id: self.window_id,
+            #[cfg(feature = "api-20")]
+            placeholder: self.placeholder.clone(),
+            #[cfg(feature = "api-20")]
+            ability_name: self.ability_name.clone(),
+            #[cfg(feature = "api-26")]
+            consume_key_events: self.consume_key_events,
         }
     }
 
@@ -85,6 +109,11 @@ impl TextConfigBuilder {
         self
     }
 
+    /// Enable preview text, e.g. for CJK composition.
+    ///
+    /// Only enable this if the [`Ime`](crate::Ime) implements
+    /// [`set_preview_text`](crate::Ime::set_preview_text) and
+    /// [`finish_text_preview`](crate::Ime::finish_text_preview).
     pub fn preview_text_support(mut self, preview_text_support: bool) -> TextConfigBuilder {
         self.preview_text_support = preview_text_support;
         self
@@ -97,6 +126,31 @@ impl TextConfigBuilder {
 
     pub fn window_id(mut self, window_id: i32) -> TextConfigBuilder {
         self.window_id = Some(window_id);
+        self
+    }
+
+    /// Set the placeholder text of the editor, which the input method may display.
+    ///
+    /// The framework truncates it to 255 characters.
+    #[cfg(feature = "api-20")]
+    pub fn placeholder(mut self, placeholder: &str) -> TextConfigBuilder {
+        self.placeholder = Some(placeholder.to_string());
+        self
+    }
+
+    /// Set the name of the ability that contains the editor.
+    ///
+    /// The framework truncates it to 127 characters.
+    #[cfg(feature = "api-20")]
+    pub fn ability_name(mut self, ability_name: &str) -> TextConfigBuilder {
+        self.ability_name = Some(ability_name.to_string());
+        self
+    }
+
+    /// Set whether the editor supports consuming key events.
+    #[cfg(feature = "api-26")]
+    pub fn consume_key_events(mut self, consume_key_events: bool) -> TextConfigBuilder {
+        self.consume_key_events = consume_key_events;
         self
     }
 }
