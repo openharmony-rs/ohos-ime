@@ -130,12 +130,15 @@ pub trait Ime: Send + Sync {
     fn insert_text(&self, text: String);
     /// Delete `len` characters after the cursor.
     ///
-    /// ArkUI text fields count code points, and an emoji sequence as one character.
+    /// See [`delete_backward`](Self::delete_backward) for what a character is.
     fn delete_forward(&self, len: usize);
 
     /// Delete `len` characters before the cursor.
     ///
-    /// ArkUI text fields count code points, and an emoji sequence as one character.
+    /// ArkUI text fields count a code point as one character, except that a whole emoji sequence,
+    /// e.g. a flag, a keycap or a ZWJ sequence, is one character. A combining mark is a character
+    /// of its own. Input methods send 1 for each press of backspace, whatever the character before
+    /// the cursor is.
     fn delete_backward(&self, len: usize);
 
     /// Return the text configuration associated with the current IME
@@ -298,7 +301,9 @@ fn attached_editor() -> MutexGuard<'static, Option<usize>> {
 /// it is [re-attached](Self::attach), and dropping it leaves the other editor attached.
 ///
 /// The framework may also detach the editor by itself, e.g. when an ArkUI text field gains
-/// focus. Methods then fail with [`InputMethodErrorCode::DETACHED`] too.
+/// focus. Methods then fail with [`InputMethodErrorCode::DETACHED`] too. ArkUI also closes the
+/// input method when the focus of its window moves to a component without text input, which
+/// includes rendering the first frame of a page, so attach after that.
 ///
 /// Dropping the attached `ImeProxy` detaches the editor, unless the framework already detached
 /// it. The C API cannot check and detach atomically, so if an ArkUI text field attaches between
