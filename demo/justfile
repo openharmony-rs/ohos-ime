@@ -6,16 +6,20 @@ set positional-arguments
 # The device for hdc, e.g. `just device=<serial> test`. Empty for the only connected device.
 device := ""
 hdc := if device == "" { "hdc" } else { "hdc -t " + device }
+# How to run hvigor and install the ohpm packages. Without the HarmonyOS command line tools, run
+# hvigor installed with npm, and install the packages with `python3 tools/install-oh-modules.py`.
+hvigor := "hvigorw"
+install-packages := "ohpm install --all"
 outputs := "entry/build/default/outputs"
 
 # Builds the demo app.
 build:
-    ohpm install --all
-    hvigorw assembleHap --no-daemon -p buildMode=release
+    {{ install-packages }}
+    {{ hvigor }} assembleHap --no-daemon -p buildMode=release
 
 # Builds the on-device tests.
 build-tests:
-    hvigorw --mode module -p module=entry@ohosTest -p isOhosTest=true \
+    {{ hvigor }} --mode module -p module=entry@ohosTest -p isOhosTest=true \
         -p product=default -p buildMode=test assembleHap --no-daemon
 
 # Builds, signs and installs the demo app.
