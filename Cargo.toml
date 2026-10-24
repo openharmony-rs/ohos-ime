@@ -7,6 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/openharmony-rs/ohos-ime"
 keywords = ["OpenHarmony", "HarmonyOS", "IME", "inputmethod"]
 readme = "README.md"
+exclude = ["/demo"]
 
 [dependencies]
 ohos-ime-sys = {  version = "0.2.5", features = ["api-12"]}

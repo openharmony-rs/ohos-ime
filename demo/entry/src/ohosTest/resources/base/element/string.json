@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_test_desc",
+      "value": "ohos-ime demo tests"
+    },
+    {
+      "name": "TestAbility_desc",
+      "value": "ohos-ime demo tests"
+    },
+    {
+      "name": "TestAbility_label",
+      "value": "ohos-ime demo tests"
+    }
+  ]
+}
