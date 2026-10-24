@@ -57,6 +57,107 @@ jobs:
         env:
           RUSTDOCFLAGS: "--cfg=docsrs"
 
+  # Runs the unit tests and the tests of the demo on the OpenHarmony 7.0 emulator of cargo-ohos.
+  emulator_tests:
+    name: Tests on the emulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_OHOS_VERSION: 0.3.4
+      OHOS_TEST_RUNNER_VERSION: 0.1.6
+      HVIGOR_VERSION: 6.26.8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-ohos, aarch64-unknown-linux-ohos
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall,just
+      - name: Install cargo-ohos and ohos-test-runner
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cargo binstall --no-confirm --disable-strategies quick-install,compile cargo-ohos --version "$CARGO_OHOS_VERSION"
+          cargo binstall --no-confirm --disable-strategies quick-install,compile ohos-test-runner --version "$OHOS_TEST_RUNNER_VERSION"
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install the OpenHarmony SDK
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cargo ohos init sdk --version 7.0
+          sdk=~/.cache/cargo-ohos/ohos-sdk/7.0/linux/26
+          # hvigor 6 looks for the SDK of API 26 in a directory named after its version.
+          mkdir "$RUNNER_TEMP/ohos-sdk"
+          ln -s "$sdk" "$RUNNER_TEMP/ohos-sdk/26.0.0"
+          echo "OHOS_BASE_SDK_HOME=$RUNNER_TEMP/ohos-sdk" >> "$GITHUB_ENV"
+          echo "$sdk/toolchains" >> "$GITHUB_PATH"
+      # hvigorw and ohpm ship only with the HarmonyOS command line tools, so this runs hvigor from
+      # npm, and installs the ohpm packages with tools/install-oh-modules.py.
+      - name: Install hvigor
+        run: |
+          hvigor_cargo=$(python3 -c 'import json; print(json.load(open("demo/hvigor/hvigor-config.json5"))["dependencies"]["@openharmony-rs/hvigor-cargo"])')
+          mkdir "$RUNNER_TEMP/hvigor"
+          cd "$RUNNER_TEMP/hvigor"
+          echo "@ohos:registry=https://repo.harmonyos.com/npm/" > .npmrc
+          npm install "@ohos/hvigor@$HVIGOR_VERSION" "@ohos/hvigor-ohos-plugin@$HVIGOR_VERSION" "@openharmony-rs/hvigor-cargo@$hvigor_cargo"
+          echo "NODE_PATH=$PWD/node_modules" >> "$GITHUB_ENV"
+          echo "HVIGOR=node $PWD/node_modules/@ohos/hvigor/bin/hvigor.js" >> "$GITHUB_ENV"
+      - name: Start the emulator
+        id: emulator
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cargo ohos init emulator
+          echo "target=$(cargo ohos emulator start --ephemeral)" >> "$GITHUB_OUTPUT"
+      - name: Run the unit tests
+        run: cargo ohos test --target x86_64 --all-features
+      # Attaching to the input method fails while the screen is locked.
+      - name: Unlock the screen
+        env:
+          TARGET: ${{ steps.emulator.outputs.target }}
+        run: |
+          hdc -t "$TARGET" shell power-shell wakeup
+          hdc -t "$TARGET" shell 'hidumper -s PowerManagerService -a "-t"'
+          # Swipe up on the lock screen of the 800x500 display.
+          hdc -t "$TARGET" shell uitest uiInput swipe 400 450 400 80 300
+          for _ in $(seq 50); do
+            if hdc -t "$TARGET" shell 'hidumper -s ScreenlockService -a "-all"' | grep -Eq 'screenLocked\s+false'; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "::error::The screen is still locked"
+          exit 1
+      - name: Run the tests of the demo
+        working-directory: demo
+        env:
+          TARGET: ${{ steps.emulator.outputs.target }}
+        run: just hvigor="$HVIGOR" install-packages="python3 tools/install-oh-modules.py" device="$TARGET" test
+      - name: Save the device log
+        if: failure() && steps.emulator.outcome == 'success'
+        run: hdc -t "${{ steps.emulator.outputs.target }}" shell hilog -x > hilog.txt
+      - name: Stop the emulator
+        if: always() && steps.emulator.outcome == 'success'
+        run: cargo ohos emulator stop
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-logs
+          path: |
+            hilog.txt
+            ~/.cache/cargo-ohos/ohos-emulator/instances/x86_64-phone/*.log
+          if-no-files-found: ignore
+
   build-result:
     name: Result
     runs-on: ubuntu-latest
@@ -67,6 +168,7 @@ jobs:
       - build-toolchains
       - semver_checks
       - rustdoc
+      - emulator_tests
     steps:
       - name: Success
         if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}

@@ -14,6 +14,9 @@ needs an SDK and a device of API 26:
 cargo ohos test --target aarch64 --all-features
 ```
 
+CI runs them with `--target x86_64` on the OpenHarmony emulator of cargo-ohos
+(`cargo ohos emulator start`).
+
 Attaching to the input method needs a focused application window, so the tests only cover
 the callback dispatch and conversions. Check input method behavior in an application.
 
@@ -34,6 +37,15 @@ just test     # also runs the tests; the screen has to be on and unlocked
 The tests tap keys of the soft keyboard by position, which is known for a few input methods only.
 `tools/sign-hap.py` signs with the public OpenHarmony test keys, which HarmonyOS devices reject; sign
 with your own profile for those.
+
+hvigorw and ohpm ship only with the HarmonyOS command line tools. Without them, run hvigor installed
+with npm and install the ohpm packages with `tools/install-oh-modules.py`, as the `emulator_tests`
+job in `.github/workflows/ci.yml` does, which also shows the setup:
+
+```sh
+just hvigor="node <dir>/node_modules/@ohos/hvigor/bin/hvigor.js" \
+    install-packages="python3 tools/install-oh-modules.py" test
+```
 
 [hvigor-cargo]: https://github.com/openharmony-rs/hvigor-cargo
 
