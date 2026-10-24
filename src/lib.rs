@@ -754,6 +754,9 @@ impl Drop for AttachOptions {
 
 /// An [`Ime`] implementation registered with a native text editor, ready to be attached
 /// with [`ImeProxy::new`].
+///
+/// Dropping it unregisters the [`Ime`]. A callback that started on another thread before may
+/// still be running afterwards.
 pub struct RawTextEditorProxy {
     raw: NonNull<InputMethod_TextEditorProxy>,
 }

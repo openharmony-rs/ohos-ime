@@ -4,7 +4,8 @@ use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
 use ohos_ime_sys::types::{
     InputMethod_Direction, InputMethod_ExtendAction, InputMethod_KeyboardStatus,
 };
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 /// Serializes the tests, which share the dispatcher, the recycled editors and the attached editor.
 fn serial() -> MutexGuard<'static, ()> {
@@ -411,6 +412,69 @@ fn private_commands_skip_null_and_decode_invalid_utf8_lossily() {
     );
 }
 
+/// An `Ime` that creates, uses and drops another editor while it handles an insertion.
+struct CreatesEditors {
+    config: TextConfig,
+    inner_events: Arc<Mutex<Vec<Event>>>,
+}
+
+impl Ime for CreatesEditors {
+    fn insert_text(&self, text: String) {
+        let (inner, events) = new_editor();
+        insert(&inner, &utf16(&text));
+        drop(inner);
+        self.inner_events.lock().unwrap().extend(take(&events));
+    }
+    fn delete_forward(&self, _len: usize) {}
+    fn delete_backward(&self, _len: usize) {}
+    fn get_text_config(&self) -> &TextConfig {
+        &self.config
+    }
+    fn send_enter_key(&self, _enter_key: InputMethod_EnterKeyType) {}
+}
+
+#[test]
+fn callbacks_may_create_and_drop_editors() {
+    let _serial = serial();
+    let inner_events = Arc::new(Mutex::new(Vec::new()));
+    let ime = CreatesEditors {
+        config: TextConfig::default(),
+        inner_events: inner_events.clone(),
+    };
+    let editor = RawTextEditorProxy::new(Box::new(ime)).unwrap();
+    let raw = editor.raw.as_ptr() as usize;
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        let text = utf16("a");
+        // SAFETY: Text editors are never destroyed, and `text` is a valid slice.
+        unsafe { insert_text(raw as *mut _, text.as_ptr(), text.len()) };
+        done.send(()).unwrap();
+    });
+    if finished.recv_timeout(Duration::from_secs(10)).is_err() {
+        // Dropping the editor would wait for the deadlocked callback.
+        std::mem::forget(editor);
+        panic!("The callback deadlocked");
+    }
+    assert_eq!(take(&inner_events), [Event::Insert("a".into())]);
+}
+
+#[test]
+fn concurrent_editors_receive_their_own_events() {
+    let _serial = serial();
+    std::thread::scope(|scope| {
+        for thread in 0..4 {
+            scope.spawn(move || {
+                for i in 0..50 {
+                    let (editor, events) = new_editor();
+                    let text = format!("{thread} {i}");
+                    insert(&editor, &utf16(&text));
+                    assert_eq!(take(&events), [Event::Insert(text)]);
+                }
+            });
+        }
+    });
+}
+
 #[test]
 fn dropped_editor_is_unregistered() {
     let _serial = serial();
@@ -452,6 +516,27 @@ fn dropped_editors_are_reused_only_after_a_delay() {
     assert_eq!(take(&old_events), []);
 }
 
+#[test]
+fn dropped_editors_are_reused_after_exactly_the_delay() {
+    let _serial = serial();
+    // Forget the editors that earlier tests in this process recycled.
+    RECYCLED.lock().unwrap().clear();
+    let (editor, _) = new_editor();
+    let addr = editor.addr();
+    drop(editor);
+    drop((1..RECYCLE_DELAY).map(|_| new_editor()).collect::<Vec<_>>());
+    let (next, _) = new_editor();
+    assert_ne!(
+        next.addr(),
+        addr,
+        "reused after {} drops",
+        RECYCLE_DELAY - 1
+    );
+    drop(next);
+    let (next, _) = new_editor();
+    assert_eq!(next.addr(), addr);
+}
+
 fn fake_attach(
     _editor: *mut InputMethod_TextEditorProxy,
     ime_proxy: *mut *mut InputMethod_InputMethodProxy,
@@ -490,7 +575,7 @@ fn attaching_another_editor_makes_the_previous_proxy_inert() {
         Err(InputMethodErrorCode::DETACHED)
     );
     assert_eq!(b.with_raw(|_| Ok(())), Ok(()));
-    // Dropping the superseded proxy neither calls the framework nor detaches `b`.
+    // Dropping the superseded proxy leaves `b` attached.
     drop(a);
     assert_eq!(*attached_editor(), Some(b.editor.addr()));
     drop_fake(b);
@@ -511,6 +596,82 @@ fn failed_attach_detaches_the_previous_editor() {
         Err(InputMethodErrorCode::DETACHED)
     );
     assert_eq!(*attached_editor(), None);
+}
+
+#[test]
+fn superseded_proxy_methods_return_detached() {
+    let _serial = serial();
+    let a = fake_attached_proxy();
+    let b = fake_attached_proxy();
+    let detached = Err(InputMethodErrorCode::DETACHED);
+    assert_eq!(a.show_keyboard(), detached);
+    assert_eq!(a.hide_keyboard(), detached);
+    #[cfg(feature = "api-15")]
+    assert_eq!(a.show_text_input(&AttachOptions::new(true)), detached);
+    assert_eq!(a.notify_selection_change("abc", 1, 2), detached);
+    assert_eq!(
+        a.notify_configuration_change(
+            InputMethod_EnterKeyType::IME_ENTER_KEY_DONE,
+            InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_TEXT
+        ),
+        detached
+    );
+    assert_eq!(a.notify_cursor_update(CursorRect::default()), detached);
+    let command = PrivateCommand::new("k", PrivateCommandValue::Bool(true));
+    assert_eq!(a.send_private_command(&[command]), detached);
+    drop(a);
+    drop_fake(b);
+}
+
+#[test]
+fn selection_positions_beyond_i32_are_rejected() {
+    let _serial = serial();
+    let proxy = fake_attached_proxy();
+    let too_far = usize::try_from(i32::MAX).unwrap() + 1;
+    assert_eq!(
+        proxy.notify_selection_change("abc", too_far, 0),
+        Err(InputMethodErrorCode::PARAMCHECK)
+    );
+    assert_eq!(
+        proxy.notify_selection_change("abc", 0, too_far),
+        Err(InputMethodErrorCode::PARAMCHECK)
+    );
+    drop_fake(proxy);
+}
+
+#[test]
+fn attaches_are_serialized() {
+    let _serial = serial();
+    let log = &Mutex::new(Vec::new());
+    let (attaching, started) = mpsc::channel();
+    let b_addr = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let (a, _) = new_editor();
+            attach_editor(&a, |editor, ime_proxy| {
+                log.lock().unwrap().push("a starts");
+                attaching.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+                log.lock().unwrap().push("a ends");
+                fake_attach(editor, ime_proxy)
+            })
+            .unwrap();
+        });
+        let b = scope.spawn(move || {
+            started.recv().unwrap();
+            let (b, _) = new_editor();
+            attach_editor(&b, |editor, ime_proxy| {
+                log.lock().unwrap().push("b starts");
+                fake_attach(editor, ime_proxy)
+            })
+            .unwrap();
+            b.addr()
+        });
+        b.join().unwrap()
+    });
+    assert_eq!(*log.lock().unwrap(), ["a starts", "a ends", "b starts"]);
+    let mut attached = attached_editor();
+    assert_eq!(*attached, Some(b_addr));
+    *attached = None;
 }
 
 #[test]

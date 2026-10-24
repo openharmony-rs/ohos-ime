@@ -97,7 +97,7 @@ impl Dispatcher {
 pub(crate) const RECYCLE_DELAY: usize = 64;
 
 /// Addresses of unused text editors, oldest first, with the dispatcher callbacks registered.
-static RECYCLED: Mutex<VecDeque<usize>> = Mutex::new(VecDeque::new());
+pub(crate) static RECYCLED: Mutex<VecDeque<usize>> = Mutex::new(VecDeque::new());
 
 pub(crate) fn take_recycled() -> Option<NonNull<InputMethod_TextEditorProxy>> {
     let mut recycled = RECYCLED.lock().unwrap_or_else(PoisonError::into_inner);
