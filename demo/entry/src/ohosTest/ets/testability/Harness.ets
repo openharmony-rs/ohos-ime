@@ -47,6 +47,19 @@ export function keyboardRect(): window.Rect {
   };
 }
 
+/** Whether the soft keyboard is shown. */
+export function keyboardShown(): boolean {
+  return keyboardRect().height > 0;
+}
+
+/** Moves the focus away from the text field, which makes ArkUI close the input method. */
+export function clearFocus(): void {
+  if (mainWindow === undefined) {
+    throw new Error('The main window is not known');
+  }
+  mainWindow.getUIContext().getFocusController().clearFocus();
+}
+
 export async function waitUntil(condition: () => boolean, what: string, timeoutMs: number = 10000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {

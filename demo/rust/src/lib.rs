@@ -10,8 +10,9 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Once, PoisonError};
 use napi_derive_ohos::napi;
 use napi_ohos::{Error, Result};
 use ohos_ime::{
-    AttachOptions, Direction, ExtendAction, Ime, ImeProxy, InputMethod_EnterKeyType,
-    KeyboardStatus, PrivateCommand, RawTextEditorProxy, TextConfig,
+    AttachOptions, CursorRect, Direction, ExtendAction, Ime, ImeProxy, InputMethodResult,
+    InputMethod_EnterKeyType, InputMethod_TextInputType, KeyboardStatus, PrivateCommand,
+    PrivateCommandValue, RawTextEditorProxy, TextConfig,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -155,4 +156,70 @@ pub fn text() -> String {
 #[napi]
 pub fn events() -> Vec<String> {
     state().events.clone()
+}
+
+/// Calls `f` with the attached editor, and returns the framework's error code, 0 for success.
+fn with_proxy(f: impl FnOnce(&mut ImeProxy) -> InputMethodResult) -> Result<u32> {
+    PROXY.with_borrow_mut(|proxy| match proxy {
+        Some(proxy) => Ok(f(proxy).err().map_or(0, |e| e.0.get())),
+        None => Err(Error::from_reason("No editor is attached")),
+    })
+}
+
+/// Re-attaches the editor and shows the keyboard.
+#[napi]
+pub fn reattach() -> Result<u32> {
+    with_proxy(|proxy| proxy.attach(&AttachOptions::new(true)))
+}
+
+#[napi]
+pub fn show_keyboard() -> Result<u32> {
+    with_proxy(|proxy| proxy.show_keyboard())
+}
+
+#[napi]
+pub fn hide_keyboard() -> Result<u32> {
+    with_proxy(|proxy| proxy.hide_keyboard())
+}
+
+/// Tells the input method the text of the editor and a selection in it.
+#[napi]
+pub fn notify_selection_change(start: u32, end: u32) -> Result<u32> {
+    let text = state().text.clone();
+    with_proxy(|proxy| proxy.notify_selection_change(&text, start as usize, end as usize))
+}
+
+#[napi]
+pub fn notify_configuration_change() -> Result<u32> {
+    with_proxy(|proxy| {
+        proxy.notify_configuration_change(
+            InputMethod_EnterKeyType::IME_ENTER_KEY_DONE,
+            InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_TEXT,
+        )
+    })
+}
+
+#[napi]
+pub fn notify_cursor_update(left: f64, top: f64, width: f64, height: f64) -> Result<u32> {
+    let cursor = CursorRect {
+        left,
+        top,
+        width,
+        height,
+    };
+    with_proxy(|proxy| proxy.notify_cursor_update(cursor))
+}
+
+/// Sends `count` private commands to the input method.
+#[napi]
+pub fn send_private_commands(count: u32) -> Result<u32> {
+    let commands: Vec<_> = (0..count)
+        .map(|i| {
+            PrivateCommand::new(
+                format!("ohos-ime-demo.{i}"),
+                PrivateCommandValue::Bool(true),
+            )
+        })
+        .collect();
+    with_proxy(|proxy| proxy.send_private_command(&commands))
 }
