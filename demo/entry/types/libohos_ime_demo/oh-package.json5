@@ -1,0 +1,6 @@
+{
+  "name": "libohos_ime_demo.so",
+  "types": "./index.d.ts",
+  "version": "0.0.0",
+  "description": "Node-API module of the demo, built from rust/"
+}

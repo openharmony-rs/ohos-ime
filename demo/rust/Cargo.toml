@@ -1,0 +1,22 @@
+[package]
+name = "ohos-ime-demo"
+description = "Demo and on-device test app for ohos-ime"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+# ArkTS imports the library as `libohos_ime_demo.so`.
+name = "ohos_ime_demo"
+crate-type = ["cdylib"]
+
+[dependencies]
+hilog = "0.2.2"
+log = "0.4.22"
+napi-derive-ohos = "1.2.0"
+napi-ohos = "1.2.0"
+ohos-ime = { path = "../.." }
+unicode-segmentation = "1.13"
+
+[workspace]

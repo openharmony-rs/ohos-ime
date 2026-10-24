@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.0.0",
+  "description": "Demo and on-device tests for ohos-ime",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libohos_ime_demo.so": "file:./types/libohos_ime_demo"
+  }
+}

@@ -20,6 +20,23 @@ the callback dispatch and conversions. Check input method behavior in an applica
 [cargo-ohos]: https://github.com/openharmony-rs/cargo-ohos
 [ohos-test-runner]: https://github.com/openharmony-rs/ohos-test-runner
 
+## Demo
+
+`demo/` is an app with a small editor that shows which callbacks it receives, next to an ArkUI text
+field for comparison. Its on-device tests check how input methods and ArkUI handle the input, e.g.
+what deleting an emoji asks for. In `demo/`, with [hvigor-cargo]'s requirements installed:
+
+```sh
+just install  # builds, signs and installs the app
+just test     # also runs the tests; the screen has to be on and unlocked
+```
+
+The tests tap keys of the soft keyboard by position, which is known for a few input methods only.
+`tools/sign-hap.py` signs with the public OpenHarmony test keys, which HarmonyOS devices reject; sign
+with your own profile for those.
+
+[hvigor-cargo]: https://github.com/openharmony-rs/hvigor-cargo
+
 ## License
 
 This project is licensed under the Apache-2.0 license.

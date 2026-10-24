@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "ohos-ime demo"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "ohos-ime demo"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "ohos-ime demo"
+    }
+  ]
+}
