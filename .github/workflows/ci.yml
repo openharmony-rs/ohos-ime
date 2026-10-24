@@ -119,7 +119,9 @@ jobs:
           cargo ohos init emulator
           echo "target=$(cargo ohos emulator start --ephemeral)" >> "$GITHUB_OUTPUT"
       - name: Run the unit tests
-        run: cargo ohos test --target x86_64 --all-features
+        run: |
+          cargo ohos test --target x86_64 --all-features
+          cargo ohos test --target x86_64
       # Attaching to the input method fails while the screen is locked.
       - name: Unlock the screen
         env:
