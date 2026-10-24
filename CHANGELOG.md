@@ -27,6 +27,8 @@
   reason and `show_text_input`, the placeholder and ability name, callbacks on the main thread,
   attaching with a UI context, and `consume_key_events`.
 - Re-export the `ohos-ime-sys` types used in the API, and with `api-23` `ArkUI_ContextHandle`.
+- Derive `Debug` and `PartialEq` for `KeyboardVisibility`, `PartialEq` for `KeyboardStatus` and
+  `Debug` for `InvalidSelection`.
 - Document that positions are UTF-16 code units, that delete lengths count characters, and on
   which threads callbacks run.
 

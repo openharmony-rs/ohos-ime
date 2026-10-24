@@ -1,6 +1,9 @@
 use crate::text_editor::*;
 use crate::*;
 use ohos_ime_sys::private_command::InputMethod_PrivateCommand;
+use ohos_ime_sys::types::{
+    InputMethod_Direction, InputMethod_ExtendAction, InputMethod_KeyboardStatus,
+};
 use std::sync::Arc;
 
 /// Serializes the tests, which share the dispatcher, the recycled editors and the attached editor.
@@ -12,6 +15,10 @@ fn serial() -> MutexGuard<'static, ()> {
 #[derive(Debug, PartialEq)]
 enum Event {
     Insert(String),
+    DeleteForward(usize),
+    DeleteBackward(usize),
+    EnterKey(InputMethod_EnterKeyType),
+    KeyboardStatus(KeyboardStatus),
     MoveCursor(Direction),
     SetSelection(usize, usize),
     ExtendAction(ExtendAction),
@@ -23,6 +30,7 @@ enum Event {
 struct Recorder {
     events: Arc<Mutex<Vec<Event>>>,
     config: TextConfig,
+    text_index: usize,
 }
 
 impl Recorder {
@@ -35,12 +43,21 @@ impl Ime for Recorder {
     fn insert_text(&self, text: String) {
         self.push(Event::Insert(text));
     }
-    fn delete_forward(&self, _len: usize) {}
-    fn delete_backward(&self, _len: usize) {}
+    fn delete_forward(&self, len: usize) {
+        self.push(Event::DeleteForward(len));
+    }
+    fn delete_backward(&self, len: usize) {
+        self.push(Event::DeleteBackward(len));
+    }
     fn get_text_config(&self) -> &TextConfig {
         &self.config
     }
-    fn send_enter_key(&self, _enter_key: InputMethod_EnterKeyType) {}
+    fn send_enter_key(&self, enter_key: InputMethod_EnterKeyType) {
+        self.push(Event::EnterKey(enter_key));
+    }
+    fn keyboard_status_changed(&self, status: KeyboardStatus) {
+        self.push(Event::KeyboardStatus(status));
+    }
     fn move_cursor(&self, direction: Direction) {
         self.push(Event::MoveCursor(direction));
     }
@@ -57,7 +74,7 @@ impl Ime for Recorder {
         "😀world".to_string()
     }
     fn text_index_at_cursor(&self) -> usize {
-        7
+        self.text_index
     }
     fn set_preview_text(
         &self,
@@ -85,6 +102,7 @@ fn new_editor() -> (RawTextEditorProxy, Arc<Mutex<Vec<Event>>>) {
     let ime = Recorder {
         events: events.clone(),
         config: TextConfig::default(),
+        text_index: 7,
     };
     let editor = RawTextEditorProxy::new(Box::new(ime)).expect("Creating the editor failed");
     (editor, events)
@@ -135,6 +153,48 @@ fn insert_text_rejects_malformed_utf16() {
     let (editor, events) = new_editor();
     insert(&editor, &[0xD800]);
     assert_eq!(take(&events), []);
+}
+
+#[test]
+fn deletions_and_enter_key_are_forwarded() {
+    let _serial = serial();
+    let (editor, events) = new_editor();
+    let raw = editor.raw.as_ptr();
+    delete_forward(raw, 3);
+    delete_forward(raw, -1);
+    delete_backward(raw, 2);
+    delete_backward(raw, -1);
+    send_enter_key(raw, InputMethod_EnterKeyType::IME_ENTER_KEY_SEARCH);
+    assert_eq!(
+        take(&events),
+        [
+            Event::DeleteForward(3),
+            Event::DeleteForward(0),
+            Event::DeleteBackward(2),
+            Event::DeleteBackward(0),
+            Event::EnterKey(InputMethod_EnterKeyType::IME_ENTER_KEY_SEARCH),
+        ]
+    );
+}
+
+#[test]
+fn keyboard_status_is_forwarded() {
+    let _serial = serial();
+    let (editor, events) = new_editor();
+    let raw = editor.raw.as_ptr();
+    send_keyboard_status(raw, InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_NONE);
+    send_keyboard_status(raw, InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_HIDE);
+    send_keyboard_status(raw, InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_SHOW);
+    send_keyboard_status(raw, InputMethod_KeyboardStatus(42));
+    assert_eq!(
+        take(&events),
+        [
+            Event::KeyboardStatus(KeyboardStatus::None),
+            Event::KeyboardStatus(KeyboardStatus::Hidden),
+            Event::KeyboardStatus(KeyboardStatus::Shown),
+            Event::KeyboardStatus(KeyboardStatus::Unknown(42)),
+        ]
+    );
 }
 
 /// Calls a surrounding-text callback like the framework does: with a buffer of `number + 1` code
@@ -194,6 +254,18 @@ fn text_index_at_cursor_is_forwarded() {
 }
 
 #[test]
+fn text_index_at_cursor_saturates() {
+    let _serial = serial();
+    let ime = Recorder {
+        events: Default::default(),
+        config: TextConfig::default(),
+        text_index: usize::MAX,
+    };
+    let editor = RawTextEditorProxy::new(Box::new(ime)).unwrap();
+    assert_eq!(get_text_index_at_cursor(editor.raw.as_ptr()), i32::MAX);
+}
+
+#[test]
 fn preview_text_ranges() {
     let _serial = serial();
     let (editor, events) = new_editor();
@@ -217,29 +289,80 @@ fn preview_text_ranges() {
 }
 
 #[test]
+fn preview_text_rejects_malformed_text() {
+    let _serial = serial();
+    let (editor, events) = new_editor();
+    let malformed = [0xD800];
+    // SAFETY: `malformed` is a valid slice, and a null pointer is allowed.
+    unsafe {
+        let raw = editor.raw.as_ptr();
+        assert_eq!(set_preview_text(raw, std::ptr::null(), 2, -1, -1), -1);
+        assert_eq!(set_preview_text(raw, malformed.as_ptr(), 1, -1, -1), -1);
+    }
+    assert_eq!(take(&events), []);
+}
+
+#[test]
 fn cursor_selection_and_extend_actions() {
-    use ohos_ime_sys::types::{InputMethod_Direction, InputMethod_ExtendAction};
     let _serial = serial();
     let (editor, events) = new_editor();
     let raw = editor.raw.as_ptr();
     move_cursor(raw, InputMethod_Direction::IME_DIRECTION_NONE);
-    move_cursor(raw, InputMethod_Direction::IME_DIRECTION_LEFT);
+    move_cursor(raw, InputMethod_Direction::IME_DIRECTION_UP);
     move_cursor(raw, InputMethod_Direction::IME_DIRECTION_DOWN);
+    move_cursor(raw, InputMethod_Direction::IME_DIRECTION_LEFT);
+    move_cursor(raw, InputMethod_Direction::IME_DIRECTION_RIGHT);
     handle_set_selection(raw, -1, 2);
     handle_set_selection(raw, 4, 1);
     handle_extend_action(raw, InputMethod_ExtendAction(1));
+    handle_extend_action(raw, InputMethod_ExtendAction::IME_EXTEND_ACTION_SELECT_ALL);
     handle_extend_action(raw, InputMethod_ExtendAction::IME_EXTEND_ACTION_CUT);
+    handle_extend_action(raw, InputMethod_ExtendAction::IME_EXTEND_ACTION_COPY);
     handle_extend_action(raw, InputMethod_ExtendAction::IME_EXTEND_ACTION_PASTE);
     assert_eq!(
         take(&events),
         [
-            Event::MoveCursor(Direction::Left),
+            Event::MoveCursor(Direction::Up),
             Event::MoveCursor(Direction::Down),
+            Event::MoveCursor(Direction::Left),
+            Event::MoveCursor(Direction::Right),
             Event::SetSelection(4, 1),
+            Event::ExtendAction(ExtendAction::SelectAll),
             Event::ExtendAction(ExtendAction::Cut),
+            Event::ExtendAction(ExtendAction::Copy),
             Event::ExtendAction(ExtendAction::Paste),
         ]
     );
+}
+
+/// An `Ime` that keeps all provided methods.
+struct RequiredOnly(TextConfig);
+
+impl Ime for RequiredOnly {
+    fn insert_text(&self, _text: String) {}
+    fn delete_forward(&self, _len: usize) {}
+    fn delete_backward(&self, _len: usize) {}
+    fn get_text_config(&self) -> &TextConfig {
+        &self.0
+    }
+    fn send_enter_key(&self, _enter_key: InputMethod_EnterKeyType) {}
+}
+
+#[test]
+fn provided_methods_answer_like_an_empty_editor() {
+    let _serial = serial();
+    let editor = RawTextEditorProxy::new(Box::new(RequiredOnly(TextConfig::default()))).unwrap();
+    let raw = editor.raw.as_ptr();
+    assert_eq!(query(get_left_text_of_cursor, &editor, 10), utf16(""));
+    assert_eq!(query(get_right_text_of_cursor, &editor, 10), utf16(""));
+    assert_eq!(get_text_index_at_cursor(raw), 0);
+    // Rejecting the preview makes the input method insert the text instead.
+    assert_eq!(preview(&editor, "ni", -1, -1), -1);
+    finish_text_preview(raw);
+    move_cursor(raw, InputMethod_Direction::IME_DIRECTION_LEFT);
+    handle_set_selection(raw, 0, 1);
+    handle_extend_action(raw, InputMethod_ExtendAction::IME_EXTEND_ACTION_COPY);
+    send_keyboard_status(raw, InputMethod_KeyboardStatus::IME_KEYBOARD_STATUS_SHOW);
 }
 
 #[test]
@@ -259,6 +382,33 @@ fn private_commands_are_decoded() {
     };
     assert_eq!(result, 0);
     assert_eq!(take(&events), [Event::PrivateCommands(commands)]);
+}
+
+#[test]
+fn private_commands_skip_null_and_decode_invalid_utf8_lossily() {
+    use ohos_ime_sys::private_command::*;
+    let _serial = serial();
+    let (editor, events) = new_editor();
+    let mut key = *b"a\xff";
+    // SAFETY: `key` is valid for its length, and `command` is checked before use and destroyed
+    // after the callbacks.
+    unsafe {
+        let command = OH_PrivateCommand_Create(key.as_mut_ptr().cast(), key.len());
+        assert!(!command.is_null());
+        OH_PrivateCommand_SetBoolValue(command, true).unwrap();
+        let mut pointers = [std::ptr::null_mut(), command];
+        let raw = editor.raw.as_ptr();
+        assert_eq!(receive_private_command(raw, pointers.as_mut_ptr(), 2), 0);
+        assert_eq!(receive_private_command(raw, std::ptr::null_mut(), 3), 0);
+        OH_PrivateCommand_Destroy(command);
+    }
+    assert_eq!(
+        take(&events),
+        [Event::PrivateCommands(vec![PrivateCommand::new(
+            "a\u{FFFD}",
+            PrivateCommandValue::Bool(true)
+        )])]
+    );
 }
 
 #[test]
@@ -387,7 +537,7 @@ fn text_config_is_applied() {
         .input_type(InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_EMAIL_ADDRESS)
         .enterkey_type(InputMethod_EnterKeyType::IME_ENTER_KEY_SEARCH)
         .preview_text_support(true)
-        .selection(TextSelection::new(2, 5).ok().unwrap())
+        .selection(TextSelection::new(2, 5).unwrap())
         .window_id(42);
     #[cfg(feature = "api-20")]
     let builder = builder.placeholder("Søk 😀").ability_name("EntryAbility");
@@ -396,6 +546,7 @@ fn text_config_is_applied() {
     let ime = Recorder {
         events: Default::default(),
         config: builder.build(),
+        text_index: 0,
     };
     let editor = RawTextEditorProxy::new(Box::new(ime)).unwrap();
 
@@ -450,11 +601,20 @@ fn text_config_is_applied() {
     }
 }
 
+#[test]
+fn selections_beyond_i32_are_rejected() {
+    let max = usize::try_from(i32::MAX).unwrap();
+    assert!(TextSelection::new(max, max).is_ok());
+    assert!(TextSelection::new(max + 1, 0).is_err());
+    assert!(TextSelection::new(0, max + 1).is_err());
+}
+
 /// The framework does not initialize the text config it passes, so unset fields must be written.
 #[test]
 fn unset_text_config_fields_are_reset() {
     use ohos_ime_sys::text_avoid_info::*;
     use ohos_ime_sys::text_config::*;
+    use ohos_ime_sys::types::InputMethod_TextInputType;
     let _serial = serial();
     let (editor, _) = new_editor();
 
@@ -462,6 +622,12 @@ fn unset_text_config_fields_are_reset() {
     unsafe {
         let config = OH_TextConfig_Create();
         assert!(!config.is_null());
+        OH_TextConfig_SetInputType(config, InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_URL)
+            .unwrap();
+        OH_TextConfig_SetEnterKeyType(config, InputMethod_EnterKeyType::IME_ENTER_KEY_GO).unwrap();
+        OH_TextConfig_SetPreviewTextSupport(config, true).unwrap();
+        #[cfg(feature = "api-26")]
+        OH_TextConfig_SetConsumeKeyEvents(config, true).unwrap();
         OH_TextConfig_SetSelection(config, 5, 9).unwrap();
         OH_TextConfig_SetWindowId(config, 77).unwrap();
         let mut avoid_info = std::ptr::null_mut();
@@ -477,6 +643,27 @@ fn unset_text_config_fields_are_reset() {
 
         get_text_config(editor.raw.as_ptr(), config);
 
+        let mut input_type = InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_NONE;
+        OH_TextConfig_GetInputType(config, &raw mut input_type).unwrap();
+        assert_eq!(
+            input_type,
+            InputMethod_TextInputType::IME_TEXT_INPUT_TYPE_TEXT
+        );
+        let mut enter_key = InputMethod_EnterKeyType::IME_ENTER_KEY_DONE;
+        OH_TextConfig_GetEnterKeyType(config, &raw mut enter_key).unwrap();
+        assert_eq!(
+            enter_key,
+            InputMethod_EnterKeyType::IME_ENTER_KEY_UNSPECIFIED
+        );
+        let mut preview = true;
+        OH_TextConfig_IsPreviewTextSupported(config, &raw mut preview).unwrap();
+        assert!(!preview);
+        #[cfg(feature = "api-26")]
+        {
+            let mut consume = true;
+            OH_TextConfig_GetConsumeKeyEvents(config, &raw mut consume).unwrap();
+            assert!(!consume);
+        }
         let (mut start, mut end) = (0, 0);
         OH_TextConfig_GetSelection(config, &raw mut start, &raw mut end).unwrap();
         assert_eq!((start, end), (-1, -1));

@@ -9,6 +9,7 @@ pub struct TextSelection {
     pub(crate) end: i32,
 }
 
+#[derive(Debug)]
 pub struct InvalidSelection(());
 
 impl From<TryFromIntError> for InvalidSelection {

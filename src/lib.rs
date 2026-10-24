@@ -621,6 +621,7 @@ pub struct AttachOptions {
     raw: NonNull<InputMethod_AttachOptions>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum KeyboardVisibility {
     Hide,
     Show,
@@ -871,7 +872,7 @@ impl Drop for RawTextEditorProxy {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum KeyboardStatus {
     None,
     Hidden,
