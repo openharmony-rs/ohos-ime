@@ -27,7 +27,8 @@ the callback dispatch and conversions. Check input method behavior in an applica
 
 `demo/` is an app with a small editor that shows which callbacks it receives, next to an ArkUI text
 field for comparison. Its on-device tests check how input methods and ArkUI handle the input, e.g.
-what deleting an emoji asks for. In `demo/`, with [hvigor-cargo]'s requirements installed:
+what deleting an emoji asks for, and what the framework does with the calls of `ImeProxy`. In
+`demo/`, with [hvigor-cargo]'s requirements installed:
 
 ```sh
 just install  # builds, signs and installs the app
