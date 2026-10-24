@@ -25,12 +25,12 @@ build-tests:
 # Builds, signs and installs the demo app.
 install: build (install-hap "default/entry-default")
 
-# Fails unless all tests pass. The screen of the device has to be on and unlocked.
+# Fails unless tests ran and passed. The screen of the device has to be on and unlocked.
 # Installs the app and its on-device tests and runs them, e.g. `just test -s class BackspaceInEditor`.
 test *args: install build-tests (install-hap "ohosTest/entry-ohosTest")
     {{ hdc }} shell aa test -b org.openharmonyrs.ohosimedemo -m entry_test -s unittest \
         /ets/testrunner/OpenHarmonyTestRunner -s timeout 30000 "$@" | tee >(cat >&2) | \
-        grep OHOS_REPORT_RESULT | grep "Failure: 0, Error: 0" > /dev/null
+        grep -E "OHOS_REPORT_RESULT: .*Tests run: [1-9][0-9]*, Failure: 0, Error: 0" > /dev/null
 
 # Signs a HAP with the OpenHarmony test keys and installs it. hdc exits with 0 even if the
 # installation failed.
