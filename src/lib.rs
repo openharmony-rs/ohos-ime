@@ -62,6 +62,11 @@
 //! of an [`ImeProxy`], on the calling thread: [`Ime::get_text_config`], and
 //! [`Ime::finish_text_preview`] and [`Ime::keyboard_status_changed`] of the editor that gets
 //! detached. These must not create, attach or drop an [`ImeProxy`], or call its methods.
+//!
+//! ArkUI text fields use the same input method controller, on the main thread. Attach and drop
+//! [`ImeProxy`]s on the main thread too: when the focus moves from an ArkUI text field to a
+//! component without text input, ArkUI closes the input method, and an editor that another thread
+//! attaches meanwhile may not receive any input. Dropping has a similar race, see [`ImeProxy`].
 mod private_command;
 #[cfg(test)]
 mod tests;
