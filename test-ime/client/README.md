@@ -15,3 +15,6 @@ with TestIme("<serial>", bundle="org.openharmonyrs.testime") as ime:
     ime.backspace()
     assert ime.before() == "hello "
 ```
+
+`TestIme` takes a device serial, an [hdc-py](https://pypi.org/project/hdc-py/) `HarmonyDevice`, or nothing
+for the only connected device.

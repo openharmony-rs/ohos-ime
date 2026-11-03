@@ -13,3 +13,9 @@ Repository = "https://github.com/openharmony-rs/ohos-ime"
 [build-system]
 requires = ["uv_build>=0.9,<0.13"]
 build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
