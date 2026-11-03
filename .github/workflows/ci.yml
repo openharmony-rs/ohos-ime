@@ -57,6 +57,19 @@ jobs:
         env:
           RUSTDOCFLAGS: "--cfg=docsrs"
 
+  test_ime_client:
+    name: Test IME client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: test-ime/client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uvx ruff@0.17.3 format --check .
+      - run: uvx ruff@0.17.3 check .
+      - run: uv build
+
   # Runs the unit tests and the tests of the demo on the OpenHarmony 7.0 emulator of cargo-ohos.
   emulator_tests:
     name: Tests on the emulator
@@ -144,6 +157,9 @@ jobs:
         env:
           TARGET: ${{ steps.emulator.outputs.target }}
         run: just hvigor="$HVIGOR" install-packages="python3 tools/install-oh-modules.py" device="$TARGET" test
+      - name: Build the test IME
+        working-directory: test-ime
+        run: just hvigor="$HVIGOR" build
       - name: Save the device log
         if: failure() && steps.emulator.outcome == 'success'
         run: hdc -t "${{ steps.emulator.outputs.target }}" shell hilog -x > hilog.txt
@@ -170,6 +186,7 @@ jobs:
       - build-toolchains
       - semver_checks
       - rustdoc
+      - test_ime_client
       - emulator_tests
     steps:
       - name: Success
