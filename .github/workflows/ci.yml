@@ -11,7 +11,7 @@ jobs:
     name: Code Quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- --deny warnings
@@ -29,7 +29,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -41,7 +41,7 @@ jobs:
   semver_checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
@@ -50,7 +50,7 @@ jobs:
     name: Build Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - name: Build docs
         run: cargo doc --all-features --no-deps
@@ -67,7 +67,7 @@ jobs:
       OHOS_TEST_RUNNER_VERSION: 0.1.6
       HVIGOR_VERSION: 6.26.8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-ohos, aarch64-unknown-linux-ohos
@@ -152,7 +152,7 @@ jobs:
         run: cargo ohos emulator stop
       - name: Upload the logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emulator-logs
           path: |
