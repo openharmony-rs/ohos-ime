@@ -16,7 +16,7 @@ struct KeyboardPanel {
       Row({ space: 8 }) {
         Button('a').id('testime_key_a').onClick(() => this.send({ op: 'insert', text: 'a' }))
         Button('⌫').id('testime_key_backspace').onClick(() => this.send({ op: 'backspace', n: 1 }))
-        Button('⏎').id('testime_key_enter').onClick(() => this.send({ op: 'key', action: 0 }))
+        Button('⏎').id('testime_key_enter').onClick(() => this.send({ op: 'enter' }))
         Button('hide').id('testime_hide').onClick(() => this.send({ op: 'hide' }))
       }
     }
