@@ -1,6 +1,6 @@
 [project]
 name = "ohos-test-ime"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Host-side client for a scriptable OpenHarmony input method, for on-device tests"
 readme = "README.md"
 requires-python = ">=3.11"
