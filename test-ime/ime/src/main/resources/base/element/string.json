@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "Scriptable test input method" },
+    { "name": "ime_label", "value": "Test IME" }
+  ]
+}

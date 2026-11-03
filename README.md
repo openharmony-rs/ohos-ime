@@ -39,6 +39,13 @@ The tests tap keys of the soft keyboard by position, which is known for a few in
 `tools/sign-hap.py` signs with the public OpenHarmony test keys, which HarmonyOS devices reject; sign
 with your own profile for those.
 
+## Test IME
+
+`test-ime/` is a scriptable input method for on-device tests of any app, with a Python client
+(`ohos-test-ime`). Tests drive it from the host, so text arrives through the input method framework
+without depending on a vendor keyboard, and they can check what tapping keys can't: preview text,
+the text around the cursor and cursor moves. See [`test-ime/README.md`](test-ime/README.md).
+
 hvigorw and ohpm ship only with the HarmonyOS command line tools. Without them, run hvigor installed
 with npm and install the ohpm packages with `tools/install-oh-modules.py`, as the `emulator_tests`
 job in `.github/workflows/ci.yml` does, which also shows the setup:

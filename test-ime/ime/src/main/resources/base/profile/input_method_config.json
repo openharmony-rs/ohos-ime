@@ -1,0 +1,11 @@
+{
+  "subtypes": [
+    {
+      "icon": "$media:icon",
+      "id": "TestImeService",
+      "label": "$string:ime_label",
+      "locale": "en-US",
+      "mode": "lower"
+    }
+  ]
+}
