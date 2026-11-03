@@ -1,0 +1,35 @@
+{
+  "module": {
+    "name": "testime",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      { "name": "ohos.permission.INTERNET" }
+    ],
+    // TEST_IME_MODULE_TYPE=feature at build time turns this into a module of another app's bundle.
+    "extensionAbilities": [
+      {
+        "name": "TestImeService",
+        "srcEntry": "./ets/ime/TestImeService.ets",
+        "label": "$string:ime_label",
+        "description": "$string:ime_label",
+        "icon": "$media:icon",
+        "type": "inputMethod",
+        "exported": true,
+        "metadata": [
+          {
+            "name": "ohos.extension.input_method",
+            "resource": "$profile:input_method_config"
+          }
+        ]
+      }
+    ]
+  }
+}

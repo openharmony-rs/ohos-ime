@@ -1,0 +1,11 @@
+{
+  "app": {
+    // Overridden at build time with TEST_IME_BUNDLE_NAME, e.g. to build the IME as a module of the app under test.
+    "bundleName": "org.openharmonyrs.testime",
+    "vendor": "openharmony-rs",
+    "versionCode": 1,
+    "versionName": "0.1.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}

@@ -1,0 +1,34 @@
+# Recipes for the test IME. `just --list` shows them.
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# The device for hdc, e.g. `just device=<serial> install`. Empty for the only connected device.
+device := ""
+hdc := if device == "" { "hdc" } else { "hdc -t " + device }
+hvigor := "hvigorw"
+# Bundle and module type of the HAP: a standalone `entry` by default, or a `feature` module of the app
+# under test, e.g. `just bundle=com.example.app module=feature signing=<config> build-harmonyos`.
+bundle := "org.openharmonyrs.testime"
+module := "entry"
+# A feature module must also match the app's version, e.g. `version_code=1000000 version_name=1.0.0`.
+version_code := ""
+version_name := ""
+env := "TEST_IME_BUNDLE_NAME=" + bundle + " TEST_IME_MODULE_TYPE=" + module + \
+    (if version_code == "" { "" } else { " TEST_IME_VERSION_CODE=" + version_code + " TEST_IME_VERSION_NAME=" + version_name })
+# hvigor signing configs (JSON list with `default` and `hos` entries) for HarmonyOS devices.
+signing := ""
+outputs := "ime/build/default/outputs/default"
+
+# Builds the HAP for OpenHarmony devices and signs it with the SDK's public test keys.
+build:
+    {{ env }} {{ hvigor }} assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
+    python3 ../demo/tools/sign-hap.py {{ outputs }}/testime-default-unsigned.hap {{ outputs }}/testime-default-signed.hap
+
+# Builds the HAP for HarmonyOS devices, signed with the `hos` entry of `signing`.
+build-harmonyos:
+    test -n "{{ signing }}" || { echo "pass signing=<signing-configs.json>"; exit 1; }
+    {{ env }} TEST_IME_SIGNING_CONFIG={{ signing }} {{ hvigor }} assembleHap --mode module -p product=harmonyos -p buildMode=debug --no-daemon
+
+# Installs the signed HAP. hdc exits with 0 even if the installation failed.
+install hap=(outputs + "/testime-default-signed.hap"):
+    {{ hdc }} install -r {{ hap }} | tee >(cat >&2) | grep "install bundle successfully" > /dev/null

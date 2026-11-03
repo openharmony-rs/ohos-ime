@@ -1,0 +1,9 @@
+{
+  "modelVersion": "6.0.0",
+  "name": "test-ime",
+  "version": "0.1.0",
+  "description": "Scriptable input method for on-device tests",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {}
+}
