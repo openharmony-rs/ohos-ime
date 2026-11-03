@@ -1,0 +1,25 @@
+name: Release ohos-test-ime
+
+# Publishes the test IME's Python client to PyPI when a tag like `ohos-test-ime-v0.1.0` is pushed.
+on:
+  push:
+    tags: ["ohos-test-ime-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # PyPI trusted publishing
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: test-ime/client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Check that the tag matches the version
+        run: test "ohos-test-ime-v$(uv version --short)" = "$GITHUB_REF_NAME"
+      - run: uv build
+      - run: uv publish
