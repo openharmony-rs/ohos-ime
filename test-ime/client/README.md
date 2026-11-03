@@ -8,7 +8,7 @@ input method afterwards.
 ```python
 from ohos_test_ime import TestIme
 
-with TestIme(target="<serial>", bundle="org.openharmonyrs.testime") as ime:
+with TestIme("<serial>", bundle="org.openharmonyrs.testime") as ime:
     # Focus a text field in the app under test with a real tap first.
     ime.wait_attached()
     ime.insert("hello 😀")

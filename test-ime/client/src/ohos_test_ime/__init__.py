@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import socket
-import subprocess
 import time
 from types import TracebackType
+
+from hdc_py import HarmonyDevice, Hdc, PortForward
 
 DEVICE_PORT = 8971
 DEFAULT_BUNDLE = "org.openharmonyrs.testime"
@@ -28,8 +28,9 @@ def _free_port() -> int:
 
 
 class TestIme:
-    """Makes the test IME current on an hdc target for the duration of a `with` block, and drives it.
+    """Makes the test IME current on a device for the duration of a `with` block, and drives it.
 
+    `device` is an hdc-py device, an hdc target, or `None` for the only connected device.
     `bundle` is the bundle the IME was built into: its own, or the app under test's when built as a feature module.
     The IME is enabled in full experience mode: in basic mode it can't open its control socket.
     """
@@ -38,25 +39,21 @@ class TestIme:
 
     def __init__(
         self,
-        target: str | None = None,
+        device: HarmonyDevice | str | None = None,
         bundle: str = DEFAULT_BUNDLE,
         host_port: int | None = None,
-        hdc: str | None = None,
     ) -> None:
-        self.target = target
+        self.device = device if isinstance(device, HarmonyDevice) else Hdc().connect(target=device)
         self.bundle = bundle
         self.host_port = host_port or _free_port()
-        self.hdc_path = hdc or shutil.which("hdc") or "hdc"
         self.previous: str | None = None
+        self._forward: PortForward | None = None
         self._file = None
         self._next_id = 0
 
-    def _hdc(self, *args: str, timeout: float = 30) -> str:
-        target = ["-t", self.target] if self.target else []
-        return subprocess.run([self.hdc_path, *target, *args], capture_output=True, text=True, timeout=timeout).stdout
-
     def shell(self, command: str) -> str:
-        return self._hdc("shell", command)
+        """Runs `command` on the device and returns its output; its exit code is unknown."""
+        return self.device.cmd_without_exit_code(command, timeout=30).output
 
     def current(self) -> str | None:
         """Bundle name of the current input method."""
@@ -65,18 +62,24 @@ class TestIme:
 
     def __enter__(self) -> TestIme:
         self.previous = self.current()
-        for command in (f"ime -e {self.bundle} -f", f"ime -s {self.bundle}"):
-            output = self.shell(command)
-            if "Succeeded" not in output:
-                raise TestImeError(f"`{command}` failed: {output.strip()}")
-        self._hdc("fport", f"tcp:{self.host_port}", f"tcp:{DEVICE_PORT}")
+        try:
+            for command in (f"ime -e {self.bundle} -f", f"ime -s {self.bundle}"):
+                output = self.shell(command)
+                if "Succeeded" not in output:
+                    raise TestImeError(f"`{command}` failed: {output.strip()}")
+            self._forward = self.device.forward_port(f"tcp:{self.host_port}", f"tcp:{DEVICE_PORT}")
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
     ) -> None:
         self.close()
-        self._hdc("fport", "rm", f"tcp:{self.host_port}", f"tcp:{DEVICE_PORT}")
+        if self._forward is not None:
+            self.device.remove_port_forward(self._forward)
+            self._forward = None
         if self.previous and self.previous != self.bundle:
             self.shell(f"ime -s {self.previous}")
         self.shell(f"ime -d {self.bundle}")

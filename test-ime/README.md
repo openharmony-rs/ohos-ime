@@ -39,7 +39,7 @@ can neither open its control socket nor receive common events.
 ```python
 from ohos_test_ime import TestIme
 
-with TestIme(target="<serial>") as ime:   # enables, selects, forwards the port; restores on exit
+with TestIme("<serial>") as ime:   # enables, selects, forwards the port; restores on exit
     # Focus a text field with a real tap first.
     ime.wait_attached()
     ime.insert("hello")
