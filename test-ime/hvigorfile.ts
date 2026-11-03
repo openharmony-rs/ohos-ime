@@ -10,8 +10,7 @@ rootNode.afterNodeEvaluate(node => {
     const signingConfigsPath = process.env["TEST_IME_SIGNING_CONFIG"];
     if (signingConfigsPath) {
         if (!fs.existsSync(signingConfigsPath)) {
-            console.error("File referenced by TEST_IME_SIGNING_CONFIG does not exist!");
-            return;
+            throw new Error(`TEST_IME_SIGNING_CONFIG points to ${signingConfigsPath}, which does not exist`);
         }
         const basePath = path.dirname(signingConfigsPath);
         const signingConfigs = JSON.parse(fs.readFileSync(signingConfigsPath));
@@ -34,7 +33,7 @@ rootNode.afterNodeEvaluate(node => {
     const versionCode = process.env["TEST_IME_VERSION_CODE"];
     if (versionCode) {
         appJson['app']['versionCode'] = parseInt(versionCode);
-        appJson['app']['versionName'] = process.env["TEST_IME_VERSION_NAME"] ?? versionCode;
+        appJson['app']['versionName'] = process.env["TEST_IME_VERSION_NAME"] || versionCode;
     }
     appContext.setAppJsonOpt(appJson);
 })

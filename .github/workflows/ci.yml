@@ -124,6 +124,9 @@ jobs:
           npm install "@ohos/hvigor@$HVIGOR_VERSION" "@ohos/hvigor-ohos-plugin@$HVIGOR_VERSION" "@openharmony-rs/hvigor-cargo@$hvigor_cargo"
           echo "NODE_PATH=$PWD/node_modules" >> "$GITHUB_ENV"
           echo "HVIGOR=node $PWD/node_modules/@ohos/hvigor/bin/hvigor.js" >> "$GITHUB_ENV"
+      - name: Build the test IME
+        working-directory: test-ime
+        run: just hvigor="$HVIGOR" build
       - name: Start the emulator
         id: emulator
         env:
@@ -157,9 +160,6 @@ jobs:
         env:
           TARGET: ${{ steps.emulator.outputs.target }}
         run: just hvigor="$HVIGOR" install-packages="python3 tools/install-oh-modules.py" device="$TARGET" test
-      - name: Build the test IME
-        working-directory: test-ime
-        run: just hvigor="$HVIGOR" build
       - name: Save the device log
         if: failure() && steps.emulator.outcome == 'success'
         run: hdc -t "${{ steps.emulator.outputs.target }}" shell hilog -x > hilog.txt
